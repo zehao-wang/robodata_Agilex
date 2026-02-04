@@ -1,0 +1,16 @@
+.DS_Store
+
+__pycache__/
+*.pyc
+.env
+.vscode/
+.idea/
+node_modules/
+dist/
+build/
+*.log
+coverage/
+*.sqlite3
+*.db
+*.bak
+*.swp       
