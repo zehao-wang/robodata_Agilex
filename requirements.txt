@@ -6,3 +6,22 @@ pyrealsense2-macosx; platform_system == "Darwin"
 h5py
 numpy
 opencv-python
+
+# JAX and pyroki dependencies
+jax>=0.4.0
+jaxlib
+jaxlie>=1.0.0
+jax_dataclasses>=1.0.0
+jaxls
+yourdfpy
+trimesh
+loguru
+
+# Viser web GUI
+viser>=0.2.0
+
+# Utils
+scipy
+
+# Local pyroki (editable install)
+-e ./pyroki

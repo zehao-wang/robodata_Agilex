@@ -26,6 +26,8 @@ class HDF5Writer:
         self._color = []
         self._depth = []
         self._timestamps = []
+        self._action_qpos = []
+        self._action_gripper = []
 
     def add_frame(
         self,
@@ -35,16 +37,20 @@ class HDF5Writer:
         color: np.ndarray,
         depth: np.ndarray,
         timestamp: float,
+        action_qpos: np.ndarray | None = None,
+        action_gripper: float | None = None,
     ):
         """Buffer a single frame of data.
 
         Args:
-            qpos: (6,) joint positions in radians.
+            qpos: (6,) joint positions in radians (observation).
             qvel: (6,) joint velocities.
-            gripper: Gripper width in meters.
+            gripper: Gripper width in meters (observation).
             color: (H, W, 3) uint8 RGB image.
             depth: (H, W) uint16 depth in mm.
             timestamp: Unix timestamp.
+            action_qpos: (6,) action joint positions. If None, uses qpos.
+            action_gripper: Action gripper width. If None, uses gripper.
         """
         self._qpos.append(qpos.copy())
         self._qvel.append(qvel.copy())
@@ -52,6 +58,10 @@ class HDF5Writer:
         self._color.append(color.copy())
         self._depth.append(depth.copy())
         self._timestamps.append(timestamp)
+        if action_qpos is not None:
+            self._action_qpos.append(action_qpos.copy())
+        if action_gripper is not None:
+            self._action_gripper.append(action_gripper)
 
     @property
     def num_frames(self) -> int:
@@ -93,10 +103,18 @@ class HDF5Writer:
             imgs.create_dataset("depth", data=depth, compression="gzip",
                                 compression_opts=4)
 
-            # action (same as observations in teleoperation mode)
+            # action — separate if master-slave, otherwise same as observation
             act = f.create_group("action")
-            act.create_dataset("qpos", data=qpos)
-            act.create_dataset("gripper", data=gripper)
+            if self._action_qpos:
+                act_qpos = np.array(self._action_qpos, dtype=np.float64)
+                act.create_dataset("qpos", data=act_qpos)
+            else:
+                act.create_dataset("qpos", data=qpos)
+            if self._action_gripper:
+                act_grip = np.array(self._action_gripper, dtype=np.float64).reshape(-1, 1)
+                act.create_dataset("gripper", data=act_grip)
+            else:
+                act.create_dataset("gripper", data=gripper)
 
             # timestamps
             f.create_dataset("timestamps", data=timestamps)

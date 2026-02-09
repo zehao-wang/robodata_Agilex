@@ -3,6 +3,8 @@
 Supports two modes:
 - gs_usb: Direct USB access via python-can gs_usb interface (macOS/Linux)
 - socketcan: Linux socketcan interface
+
+Supports configurable CAN IDs for master-slave teleoperation mode.
 """
 
 import platform
@@ -43,16 +45,55 @@ def _patch_gs_usb_reset_macos():
 
 _patch_gs_usb_reset_macos()
 
-# PIPER CAN protocol constants (from piper_sdk can_id.py)
-# Joint feedback CAN IDs: two joints per frame, big-endian int32, 0.001 degree units
-JOINT_FEEDBACK_IDS = {0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)}
-# Gripper feedback CAN ID: bytes 0:4 = angle (int32, 0.001mm), bytes 4:6 = effort (int16, 0.001 Nm)
-GRIPPER_FEEDBACK_ID = 0x2A8
-
 # Conversion factor: raw value to radians (PIPER uses 0.001 degree units)
 RAW_TO_RAD = np.pi / 180.0 / 1000.0
 # Gripper raw to meters (0.001 mm -> m)
 RAW_TO_METER = 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Configurable CAN ID mapping
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ArmCANConfig:
+    """CAN ID mapping for a single arm.
+
+    Attributes:
+        joint_ids: Mapping from CAN arbitration ID to (joint_a, joint_b) indices.
+        gripper_id: CAN ID for gripper feedback.
+        name: Human-readable name for this arm config.
+    """
+    joint_ids: dict  # {CAN_ID: (joint_a_idx, joint_b_idx)}
+    gripper_id: int
+    name: str = "arm"
+
+
+# Default single-arm CAN IDs (from piper_sdk can_id.py)
+DEFAULT_CAN_CONFIG = ArmCANConfig(
+    joint_ids={0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)},
+    gripper_id=0x2A8,
+    name="default",
+)
+
+# Master arm CAN IDs (same as default — master feedback uses standard IDs)
+MASTER_CAN_CONFIG = ArmCANConfig(
+    joint_ids={0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)},
+    gripper_id=0x2A8,
+    name="master",
+)
+
+# Slave arm CAN IDs — placeholder offsets (TBD: update with actual slave IDs)
+# Common convention: slave IDs = master IDs + 0x10
+SLAVE_CAN_CONFIG = ArmCANConfig(
+    joint_ids={0x2B5: (0, 1), 0x2B6: (2, 3), 0x2B7: (4, 5)},
+    gripper_id=0x2B8,
+    name="slave",
+)
+
+# Legacy aliases for backward compatibility
+JOINT_FEEDBACK_IDS = DEFAULT_CAN_CONFIG.joint_ids
+GRIPPER_FEEDBACK_ID = DEFAULT_CAN_CONFIG.gripper_id
 
 
 @dataclass
@@ -68,16 +109,18 @@ class ArmReader:
     """Reads arm joint positions and gripper width from CAN bus."""
 
     def __init__(self, can_interface: str = "gs_usb", can_channel: str = "can0",
-                 bitrate: int = 1_000_000):
+                 bitrate: int = 1_000_000, can_config: ArmCANConfig | None = None):
         """
         Args:
             can_interface: 'gs_usb' for USB CAN adapter or 'socketcan' for Linux.
             can_channel: CAN channel name (used for socketcan mode).
             bitrate: CAN bus bitrate.
+            can_config: CAN ID mapping. Defaults to DEFAULT_CAN_CONFIG.
         """
         self.can_interface = can_interface
         self.can_channel = can_channel
         self.bitrate = bitrate
+        self._can_config = can_config or DEFAULT_CAN_CONFIG
 
         self._bus = None
         self._state = ArmState()
@@ -160,10 +203,12 @@ class ArmReader:
     def _parse_frame(self, msg):
         """Parse a single CAN frame and update internal state."""
         now = time.time()
+        joint_ids = self._can_config.joint_ids
+        gripper_id = self._can_config.gripper_id
 
         with self._lock:
-            if msg.arbitration_id in JOINT_FEEDBACK_IDS:
-                j0, j1 = JOINT_FEEDBACK_IDS[msg.arbitration_id]
+            if msg.arbitration_id in joint_ids:
+                j0, j1 = joint_ids[msg.arbitration_id]
                 # Each joint: 4-byte signed int (big-endian)
                 raw0 = struct.unpack(">i", msg.data[0:4])[0]
                 raw1 = struct.unpack(">i", msg.data[4:8])[0]
@@ -179,7 +224,7 @@ class ArmReader:
                 self._prev_qpos = self._state.qpos.copy()
                 self._prev_time = now
 
-            elif msg.arbitration_id == GRIPPER_FEEDBACK_ID:
+            elif msg.arbitration_id == gripper_id:
                 raw_gripper = struct.unpack(">i", msg.data[0:4])[0]
                 self._state.gripper = raw_gripper * RAW_TO_METER
                 self._state.timestamp = now
