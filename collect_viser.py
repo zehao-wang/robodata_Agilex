@@ -7,11 +7,7 @@ Opens a web GUI at http://localhost:8080 with:
 - Recording controls
 
 Usage:
-    # Single arm mode (default)
     python collect_viser.py --output_dir ./data
-
-    # Master-slave mode
-    python collect_viser.py --output_dir ./data --mode master-slave
 
     # Without hardware (for testing GUI)
     python collect_viser.py --no-arm --no-camera
@@ -31,9 +27,6 @@ def main():
                         help="CAN channel (for socketcan mode)")
     parser.add_argument("--bitrate", type=int, default=1_000_000,
                         help="CAN bus bitrate")
-    parser.add_argument("--mode", type=str, default="single",
-                        choices=["single", "master-slave"],
-                        help="Arm mode: single or master-slave teleoperation")
     parser.add_argument("--port", type=int, default=8080,
                         help="Viser server port")
     parser.add_argument("--width", type=int, default=640,
@@ -60,18 +53,10 @@ def main():
     from storage.hdf5_writer import HDF5Writer
     from gui.viser_collector import ViserDataCollectorApp
 
-    # Create arm reader
+    # Create arm reader (reads slave arm feedback from CAN bus)
     if args.no_arm:
         arm_reader = None
         print("[Arm] Skipped (--no-arm mode)")
-    elif args.mode == "master-slave":
-        from robot.dual_arm_reader import DualArmReader
-        arm_reader = DualArmReader(
-            can_interface=args.can_interface,
-            can_channel=args.can_channel,
-            bitrate=args.bitrate,
-        )
-        arm_reader.start()
     else:
         from robot.arm_reader import ArmReader
         arm_reader = ArmReader(

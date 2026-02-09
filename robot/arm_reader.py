@@ -76,18 +76,20 @@ DEFAULT_CAN_CONFIG = ArmCANConfig(
     name="default",
 )
 
-# Master arm CAN IDs (same as default — master feedback uses standard IDs)
+# Master arm CAN IDs: In master-slave mode, the master (teaching input, 0xFA)
+# does NOT broadcast feedback frames. Instead it sends its joint positions as
+# control commands on 0x155-0x157 and gripper on 0x159.
 MASTER_CAN_CONFIG = ArmCANConfig(
-    joint_ids={0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)},
-    gripper_id=0x2A8,
+    joint_ids={0x155: (0, 1), 0x156: (2, 3), 0x157: (4, 5)},
+    gripper_id=0x159,
     name="master",
 )
 
-# Slave arm CAN IDs — placeholder offsets (TBD: update with actual slave IDs)
-# Common convention: slave IDs = master IDs + 0x10
+# Slave arm CAN IDs: The slave (motion output, 0xFC) broadcasts standard
+# feedback frames on 0x2A5-0x2A7 and gripper on 0x2A8 at ~200Hz.
 SLAVE_CAN_CONFIG = ArmCANConfig(
-    joint_ids={0x2B5: (0, 1), 0x2B6: (2, 3), 0x2B7: (4, 5)},
-    gripper_id=0x2B8,
+    joint_ids={0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)},
+    gripper_id=0x2A8,
     name="slave",
 )
 

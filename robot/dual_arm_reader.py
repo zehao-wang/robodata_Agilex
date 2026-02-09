@@ -1,7 +1,13 @@
 """Dual-arm CAN reader for master-slave teleoperation.
 
-Uses a single CAN bus connection and dispatches frames to master/slave
-ArmState instances based on CAN ID configuration.
+In PIPER's master-slave mode on a single CAN bus:
+- Master arm (teaching input, 0xFA) sends its joint positions as control
+  commands on 0x155/0x156/0x157 (~3Hz) and gripper on 0x159.
+- Slave arm (motion output, 0xFC) broadcasts standard feedback frames
+  on 0x2A5/0x2A6/0x2A7 (~200Hz) and gripper on 0x2A8.
+
+No CAN ID offset is needed — master uses control frame IDs, slave uses
+feedback frame IDs, so they don't collide.
 """
 
 import struct
@@ -11,7 +17,6 @@ import time
 import numpy as np
 
 from .arm_reader import (
-    ArmCANConfig,
     ArmState,
     MASTER_CAN_CONFIG,
     SLAVE_CAN_CONFIG,
@@ -22,23 +27,31 @@ from .arm_reader import (
 
 _patch_gs_usb_reset_macos()
 
+# CAN IDs for master arm (control commands from master firmware)
+_MASTER_JOINT_IDS = {0x155: (0, 1), 0x156: (2, 3), 0x157: (4, 5)}
+_MASTER_GRIPPER_ID = 0x159
+
+# CAN IDs for slave arm (standard feedback frames)
+_SLAVE_JOINT_IDS = {0x2A5: (0, 1), 0x2A6: (2, 3), 0x2A7: (4, 5)}
+_SLAVE_GRIPPER_ID = 0x2A8
+
 
 class DualArmReader:
-    """Reads master and slave arm states from a single CAN bus."""
+    """Reads master and slave arm states from a single CAN bus.
+
+    Master arm positions come from joint control commands (0x155-0x157).
+    Slave arm positions come from joint feedback frames (0x2A5-0x2A7).
+    """
 
     def __init__(
         self,
         can_interface: str = "gs_usb",
         can_channel: str = "can0",
         bitrate: int = 1_000_000,
-        master_config: ArmCANConfig | None = None,
-        slave_config: ArmCANConfig | None = None,
     ):
         self.can_interface = can_interface
         self.can_channel = can_channel
         self.bitrate = bitrate
-        self._master_cfg = master_config or MASTER_CAN_CONFIG
-        self._slave_cfg = slave_config or SLAVE_CAN_CONFIG
 
         self._bus = None
         self._master_state = ArmState()
@@ -50,15 +63,6 @@ class DualArmReader:
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
-
-        # Build combined CAN ID lookup: arbitration_id -> (config, "master"/"slave")
-        self._id_lookup = {}
-        for can_id in self._master_cfg.joint_ids:
-            self._id_lookup[can_id] = ("master", "joint", self._master_cfg.joint_ids[can_id])
-        self._id_lookup[self._master_cfg.gripper_id] = ("master", "gripper", None)
-        for can_id in self._slave_cfg.joint_ids:
-            self._id_lookup[can_id] = ("slave", "joint", self._slave_cfg.joint_ids[can_id])
-        self._id_lookup[self._slave_cfg.gripper_id] = ("slave", "gripper", None)
 
     def connect(self):
         """Open the CAN bus connection."""
@@ -136,42 +140,57 @@ class DualArmReader:
 
     def _parse_frame(self, msg):
         """Parse a single CAN frame and update the appropriate arm state."""
-        entry = self._id_lookup.get(msg.arbitration_id)
-        if entry is None:
-            return
-
-        arm_name, msg_type, joint_pair = entry
+        cid = msg.arbitration_id
         now = time.time()
 
-        with self._lock:
-            if arm_name == "master":
-                state = self._master_state
-                prev_qpos = self._master_prev_qpos
-                prev_time = self._master_prev_time
-            else:
-                state = self._slave_state
-                prev_qpos = self._slave_prev_qpos
-                prev_time = self._slave_prev_time
-
-            if msg_type == "joint":
-                j0, j1 = joint_pair
-                raw0 = struct.unpack(">i", msg.data[0:4])[0]
-                raw1 = struct.unpack(">i", msg.data[4:8])[0]
-                state.qpos[j0] = raw0 * RAW_TO_RAD
-                state.qpos[j1] = raw1 * RAW_TO_RAD
-                state.timestamp = now
-
-                if prev_time > 0:
-                    dt = now - prev_time
+        # --- Master arm: joint control commands from master firmware ---
+        if cid in _MASTER_JOINT_IDS:
+            j0, j1 = _MASTER_JOINT_IDS[cid]
+            raw0 = struct.unpack(">i", msg.data[0:4])[0]
+            raw1 = struct.unpack(">i", msg.data[4:8])[0]
+            with self._lock:
+                self._master_state.qpos[j0] = raw0 * RAW_TO_RAD
+                self._master_state.qpos[j1] = raw1 * RAW_TO_RAD
+                self._master_state.timestamp = now
+                if self._master_prev_time > 0:
+                    dt = now - self._master_prev_time
                     if dt > 0:
-                        state.qvel = (state.qpos - prev_qpos) / dt
-                prev_qpos[:] = state.qpos
-                if arm_name == "master":
-                    self._master_prev_time = now
-                else:
-                    self._slave_prev_time = now
+                        self._master_state.qvel = (
+                            self._master_state.qpos - self._master_prev_qpos
+                        ) / dt
+                self._master_prev_qpos[:] = self._master_state.qpos
+                self._master_prev_time = now
+            return
 
-            elif msg_type == "gripper":
-                raw_gripper = struct.unpack(">i", msg.data[0:4])[0]
-                state.gripper = raw_gripper * RAW_TO_METER
-                state.timestamp = now
+        if cid == _MASTER_GRIPPER_ID:
+            raw_gripper = struct.unpack(">i", msg.data[0:4])[0]
+            with self._lock:
+                self._master_state.gripper = raw_gripper * RAW_TO_METER
+                self._master_state.timestamp = now
+            return
+
+        # --- Slave arm: standard feedback frames ---
+        if cid in _SLAVE_JOINT_IDS:
+            j0, j1 = _SLAVE_JOINT_IDS[cid]
+            raw0 = struct.unpack(">i", msg.data[0:4])[0]
+            raw1 = struct.unpack(">i", msg.data[4:8])[0]
+            with self._lock:
+                self._slave_state.qpos[j0] = raw0 * RAW_TO_RAD
+                self._slave_state.qpos[j1] = raw1 * RAW_TO_RAD
+                self._slave_state.timestamp = now
+                if self._slave_prev_time > 0:
+                    dt = now - self._slave_prev_time
+                    if dt > 0:
+                        self._slave_state.qvel = (
+                            self._slave_state.qpos - self._slave_prev_qpos
+                        ) / dt
+                self._slave_prev_qpos[:] = self._slave_state.qpos
+                self._slave_prev_time = now
+            return
+
+        if cid == _SLAVE_GRIPPER_ID:
+            raw_gripper = struct.unpack(">i", msg.data[0:4])[0]
+            with self._lock:
+                self._slave_state.gripper = raw_gripper * RAW_TO_METER
+                self._slave_state.timestamp = now
+            return

@@ -14,7 +14,6 @@ import viser
 from viser.extras import ViserUrdf
 
 from robot.arm_reader import ArmReader, ArmState
-from robot.dual_arm_reader import DualArmReader
 from storage.hdf5_writer import HDF5Writer
 from utils.urdf_loader import load_piper_urdf, can_qpos_to_urdf_cfg_with_gripper
 
@@ -62,7 +61,7 @@ class ViserDataCollectorApp:
 
     def __init__(
         self,
-        arm_reader: ArmReader | DualArmReader | None,
+        arm_reader: ArmReader | None,
         camera=None,
         writer: HDF5Writer | None = None,
         port: int = 8080,
@@ -81,7 +80,6 @@ class ViserDataCollectorApp:
         self._recording = False
         self._task_name = ""
         self._instruction = ""
-        self._is_dual = isinstance(arm_reader, DualArmReader)
         self._demo_mode = demo_mode
         self._demo_sim = DemoArmSimulator() if demo_mode else None
 
@@ -132,22 +130,11 @@ class ViserDataCollectorApp:
 
             # Read arm state
             if self._demo_mode and self._demo_sim is not None:
-                # Demo mode: use animated simulation
                 display_state = self._demo_sim.get_state()
-                master_state = None
-                slave_state = None
-            elif self._is_dual:
-                slave_state = self._arm_reader.get_slave_state()
-                master_state = self._arm_reader.get_master_state()
-                display_state = slave_state
             elif self._arm_reader is not None:
                 display_state = self._arm_reader.get_state()
-                master_state = None
-                slave_state = None
             else:
                 display_state = ArmState()
-                master_state = None
-                slave_state = None
 
             # Update 3D arm visualization
             cfg = can_qpos_to_urdf_cfg_with_gripper(display_state.qpos, display_state.gripper)
@@ -176,28 +163,14 @@ class ViserDataCollectorApp:
 
             # Record if active
             if self._recording:
-                timestamp = time.time()
-                if self._is_dual:
-                    # Slave = observation, Master = action
-                    self._writer.add_frame(
-                        qpos=slave_state.qpos,
-                        qvel=slave_state.qvel,
-                        gripper=slave_state.gripper,
-                        color=color,
-                        depth=depth,
-                        timestamp=timestamp,
-                        action_qpos=master_state.qpos,
-                        action_gripper=master_state.gripper,
-                    )
-                else:
-                    self._writer.add_frame(
-                        qpos=display_state.qpos,
-                        qvel=display_state.qvel,
-                        gripper=display_state.gripper,
-                        color=color,
-                        depth=depth,
-                        timestamp=timestamp,
-                    )
+                self._writer.add_frame(
+                    qpos=display_state.qpos,
+                    qvel=display_state.qvel,
+                    gripper=display_state.gripper,
+                    color=color,
+                    depth=depth,
+                    timestamp=time.time(),
+                )
                 n = self._writer.num_frames
                 duration = n / self._fps
                 self._status_md.content = (
