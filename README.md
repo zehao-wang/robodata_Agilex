@@ -1,110 +1,174 @@
-# Agilex PIPER 数据采集系统
+# Agilex PIPER Data Collection & Control System
 
-为 Agilex PIPER 双臂（示教 + 操作端）构建的数据采集系统。同时采集操作端的关节角度、夹爪宽度和 D435i RGBD 视频流，以 HDF5 格式存储，兼容 ACT / Diffusion Policy 等主流模仿学习框架。
+Data collection and arm control system for the Agilex PIPER dual-arm setup (teaching + operation arms) via CAN bus. Captures joint angles, gripper width, and D435i RGBD video in HDF5 format compatible with ACT / Diffusion Policy frameworks.
 
-## 硬件要求
+## Hardware
 
-- Agilex PIPER 双臂（示教端 + 操作端），通过 CAN 总线连接
-- CAN USB 适配器（candleLight 固件，gs_usb 协议）
-- Intel RealSense D435i 深度相机（USB-C）
+- Agilex PIPER dual arms (master/teaching + slave/operation), CAN bus connected
+- CAN USB adapter (candleLight firmware, gs_usb protocol)
+- Intel RealSense D435i depth camera (USB-C)
 
-## 安装
+## Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用
+## World Frame Calibration
 
-### macOS（gs_usb 模式）
-
-插入 CAN USB 适配器和 D435i 相机后直接运行：
+Define a custom world coordinate frame by pointing the arm at 4 corners of a physical rectangle. This frame is then used in data collection and arm control.
 
 ```bash
-python collect.py --output_dir ./data
+# With physical arm
+python calibrate_world.py
+
+# Demo mode (no hardware)
+python calibrate_world.py --demo
 ```
 
-### Linux（socketcan 模式）
+**Procedure:**
+1. Move the arm to the origin corner (P1) and click "Record P1 (Origin)"
+2. Move to the +X direction corner (P2) and click "Record P2 (+X)"
+3. Move to the opposite corner (P3) and click "Record P3 (Opposite)"
+4. Move to the +Y direction corner (P4) and click "Record P4 (+Y)"
+5. Click "Save Calibration"
+
+The config is saved to `data/world_config.json` and automatically loaded by `collect_viser.py` and `control_arm.py`.
+
+## Data Collection
 
 ```bash
-# 初始化 CAN 接口
-bash setup_can.sh can0 1000000
+# With hardware (RGB only, default)
+python collect_viser.py --output_dir ./data --fps 15
 
-# 运行采集
-python collect.py --output_dir ./data --can-interface socketcan --can-channel can0
+# RGB + Depth
+python collect_viser.py --output_dir ./data --fps 15 --streams rgbd
+
+# macOS (gs_usb)
+python collect_viser.py --output_dir ./data
+
+# Linux (socketcan)
+python collect_viser.py --output_dir ./data --can-interface socketcan --can-channel can0
+
+# Demo mode (no hardware)
+python collect_viser.py --demo
+
+# With world frame calibration (loaded automatically if file exists)
+python collect_viser.py --world-config ./data/world_config.json
 ```
 
-### 操作方式
+Opens a viser web GUI at http://localhost:8080 with 3D arm visualization, camera feeds, and recording controls.
 
-- **空格键** - 开始/停止录制一个 episode
-- **q** - 退出程序
+**Sidebar layout:**
+1. Task Name / Instruction inputs (top)
+2. Camera folder (color feed; depth only shown with `--streams rgbd` or `--streams depth`)
+3. Arm State folder (EEF position, joint angles, gripper)
+4. Recording folder (Start/Stop button — turns red while recording)
+5. Replay folder (select and replay recorded episodes)
 
-每次按空格开始录制，再按空格停止并自动保存为 `episode_XXXX.hdf5`。
+**Replay:** Select an episode from the dropdown and click "Replay". The arm visualization animates with recorded poses, and an OpenCV window shows the recorded video. Click "Stop Replay" or wait for it to finish — live arm input resumes automatically.
 
-### 命令行参数
+## Arm Control
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--output_dir` | `./data` | 保存目录 |
-| `--can-interface` | `gs_usb` | CAN 接口类型 (`gs_usb` / `socketcan`) |
-| `--can-channel` | `can0` | CAN 通道名（socketcan 模式） |
-| `--bitrate` | `1000000` | CAN 波特率 |
-| `--width` | `640` | 图像宽度 |
-| `--height` | `480` | 图像高度 |
-| `--fps` | `30` | 采集帧率 |
+```bash
+# With physical arm
+python control_arm.py
 
-## 数据格式
+# GUI preview only
+python control_arm.py --demo
 
-每个 episode 一个 HDF5 文件：
+# With world frame (input fields show world-frame coordinates)
+python control_arm.py --world-config ./data/world_config.json
+```
+
+Interactive drag control with IK solving. When world frame is loaded, the sidebar input fields display world-frame coordinates while the 3D handle and IK solver work in the robot base frame.
+
+## Data Format
+
+Each episode is saved as an HDF5 file:
 
 ```
 episode_0000.hdf5
 ├── observations/
-│   ├── qpos          (N, 6)          float64   # 关节角度 (rad)
-│   ├── qvel          (N, 6)          float64   # 关节速度
-│   ├── gripper       (N, 1)          float64   # 夹爪宽度 (m)
+│   ├── qpos          (N, 6)           float64   # Joint angles (rad)
+│   ├── qvel          (N, 6)           float64   # Joint velocities
+│   ├── gripper       (N, 1)           float64   # Gripper width (m)
+│   ├── eef_pos       (N, 3)           float64   # EEF position (m), world or base frame
 │   └── images/
-│       ├── color     (N, 480, 640, 3) uint8    # RGB 图像
-│       └── depth     (N, 480, 640)    uint16   # 深度图 (mm)
+│       ├── color     (N, 480, 640, 3) uint8     # RGB
+│       └── depth     (N, 480, 640)    uint16    # Depth (mm)
 ├── action/
-│   ├── qpos          (N, 6)          float64   # 同 observations（示教模式）
-│   └── gripper       (N, 1)          float64
-├── timestamps        (N,)            float64   # Unix 时间戳
+│   ├── qpos          (N, 6)           float64
+│   └── gripper       (N, 1)           float64
+├── timestamps        (N,)             float64   # Unix timestamps
+├── T_base_from_world (4, 4)           float64   # World→base transform (if calibrated)
+├── T_world_from_base (4, 4)           float64   # Base→world transform (if calibrated)
 └── attrs:
-    ├── task_name     str                        # 任务名称
-    └── instruction   str                        # 自然语言指令
+    ├── num_frames              int
+    ├── fps                     int
+    ├── duration_s              float
+    ├── task_name               str
+    ├── instruction             str
+    └── world_frame_calibrated  bool
 ```
 
-## 验证数据
+## Troubleshooting
 
-```python
-import h5py
+### RealSense 相机帧超时 (`Frame didn't arrive within 5000`)
 
-f = h5py.File("data/episode_0000.hdf5", "r")
-print("Keys:", list(f.keys()))
-print("Frames:", f.attrs["num_frames"])
-print("Duration:", f.attrs["duration_s"], "s")
-print("Task:", f.attrs["task_name"])
-print("Instruction:", f.attrs["instruction"])
-print("qpos shape:", f["observations/qpos"].shape)
-print("color shape:", f["observations/images/color"].shape)
-f.close()
+D435i 需要 USB 3.0 带宽。如果日志显示 `USB: 2.1`，说明接在了 USB 2.0 口上，带宽不够会导致丢帧/超时。
+
+- **优先**：换到 USB 3.0 端口（蓝色内芯），日志应显示 `USB: 3.2`
+- **USB 2.0 降级方案**：降低帧率和分辨率
+  ```bash
+  python collect_viser.py --fps 15 --width 424 --height 240
+  ```
+- USB 2.0 下 RGBD 模式（`--streams rgbd`）基本不可用，建议只用 `--streams rgb`
+
+### 相机启动后无 RGB 画面
+
+RealSense 刚插入后 pipeline 需要初始化时间，可能几秒到几十秒无画面。
+
+1. 等待约 1 分钟
+2. 如果仍然没有画面，拔掉 USB，等待几秒后重新插入
+3. 确认 `realsense-viewer`（Intel 官方工具）能正常显示画面后再启动采集
+
+### macOS 权限
+
+`gs_usb` CAN 适配器需要 root 权限：
+```bash
+sudo /path/to/python collect_viser.py --fps 15
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 robodata_Agilex/
-├── collect.py             # 主采集脚本（入口）
-├── requirements.txt       # Python 依赖
-├── setup_can.sh           # Linux CAN 接口初始化
+├── collect_viser.py          # Data collection entry point (viser GUI)
+├── control_arm.py            # Arm control entry point (viser GUI)
+├── calibrate_world.py        # World frame calibration
+├── can_sniff.py              # CAN bus diagnostic tool
+├── requirements.txt
+├── setup_can.sh              # Linux CAN interface init
 ├── robot/
-│   └── arm_reader.py      # PIPER CAN 协议解析
+│   ├── arm_reader.py         # CAN protocol reader (single arm)
+│   ├── dual_arm_reader.py    # Dual arm reader (master+slave)
+│   └── arm_controller.py     # Arm control via piper_sdk
 ├── camera/
-│   └── realsense.py       # D435i RGBD 采集
+│   └── realsense.py          # D435i RGBD capture
 ├── storage/
-│   └── hdf5_writer.py     # HDF5 数据写入
-└── utils/
-    ├── keyboard.py         # 键盘事件监听（备用）
-    └── annotation_dialog.py # 录制标注对话框（tkinter）
+│   └── hdf5_writer.py        # HDF5 episode writer
+├── gui/
+│   ├── viser_collector.py    # Viser data collection app
+│   └── arm_control_app.py    # Viser arm control app
+├── solver/
+│   └── pyroki_ik.py          # IK solver (pyroki)
+├── utils/
+│   ├── arm_visualizer.py     # FK + matplotlib arm rendering
+│   ├── urdf_loader.py        # URDF loading + joint mapping
+│   └── world_frame.py        # World frame calibration & transforms
+├── assets/
+│   └── piper_description/    # URDF + meshes
+└── data/
+    └── world_config.json     # World frame calibration (auto-generated)
 ```

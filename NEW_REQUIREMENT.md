@@ -1,34 +1,9 @@
 # 基于当前一些成功，我需要的改进
 
+我要有一个标定模式的script，用于标定世界坐标的transform。
+这个标定模式的context和collect_viser.py是一样的，都是在主从臂都连接的情况下。这个标定模式如下。
 
-```
-   
-  CAN 总线上实际上两个臂的数据都有：             
-                                                                                
-  从臂（Slave）→ 0x2A_ 反馈帧
 
-  0x2A1  arm status   ctrl=CAN ctrl | status=normal | reached
-  0x2A5  joint 1-2    J1=-8.438° J2=-0.990°
-  0x2A6  joint 3-4    J3=+0.950° J4=+11.064°
-  0x2A7  joint 5-6    J5=+21.952° J6=-17.286°
-  0x2A8  gripper      stroke=0.21mm
+用户会通过操纵主臂把 end-effector 依次按顺序移动到现实世界平面上的矩形框的四个点，以这四个点定义出新坐标系下的xy单位平面。之后所有碰撞点的坐标都表示在新坐标系下。记录这个新的坐标系和当前robot base坐标系的偏移，存储在data/world_config.json 内。
 
-  这是从臂的反馈。ctrl=CAN ctrl（0x01）说明它处于 CAN
-  指令控制模式，在被动接收指令。
-
-  主臂（Master）→ 0x155/0x156/0x157 控制指令！
-
-  这是关键！主臂的关节位置编码在控制指令里：
-
-  0x155  joint ctrl 1-2    J1=-8.573° J2=-2.189°
-  0x156  joint ctrl 3-4    J3=+1.103° J4=+11.070°
-  0x157  joint ctrl 5-6    J5=+20.505° J6=-17.838°
-
-  主臂在 linkage teaching 模式下不发 0x2A_
-  反馈帧，而是把自己的关节角度作为控制目标通过 0x155-0x157
-  发给从臂。这就是为什么你看不到 0x2B_ 帧——根本不需要偏移，因为主臂用的是控制帧
-  ID，从臂用的是反馈帧 ID，天然不冲突。
-
-  - 主臂：从 0x155-0x157（关节控制指令）和 0x159（夹爪控制）读取位置            
-  - 从臂：从 0x2A5-0x2A7（关节反馈）和 0x2A8（夹爪反馈）读取位置    
-```
+collect_viser.py 以及 control_arm.py 都需要适应到这个坐标系下。即要读取这个world_conig.json. 对于 collect_viser.py 在写出数据的时候要把坐标系转换到这个world  corrdinate system.对于control_arm.py, 用户输入的坐标也要当成是world coordinate system 下的，转换到robot base坐标再做规划

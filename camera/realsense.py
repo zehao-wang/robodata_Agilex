@@ -9,10 +9,17 @@ import numpy as np
 class RealsenseCamera:
     """Captures aligned color and depth frames from a D435i."""
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 30):
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
+                 streams: str = "rgbd"):
+        """
+        Args:
+            streams: "rgb" for color only, "depth" for depth only,
+                     "rgbd" for both (default).
+        """
         self.width = width
         self.height = height
         self.fps = fps
+        self.streams = streams
 
         self._pipeline = None
         self._align = None
@@ -26,22 +33,37 @@ class RealsenseCamera:
     def start(self):
         """Start the RealSense pipeline and background capture thread."""
         import pyrealsense2 as rs
+        self._rs = rs
+
+        # Verify device is reachable
+        ctx = rs.context()
+        devs = ctx.query_devices()
+        print(f"[RealsenseCamera] Found {len(devs)} device(s)")
+        if len(devs) == 0:
+            raise RuntimeError("No RealSense device found")
+        usb_type = devs[0].get_info(rs.camera_info.usb_type_descriptor)
+        print(f"  - {devs[0].get_info(rs.camera_info.name)}, USB: {usb_type}")
+
+        need_color = self.streams in ("rgb", "rgbd")
+        need_depth = self.streams in ("depth", "rgbd")
 
         self._pipeline = rs.pipeline()
         config = rs.config()
-        config.enable_stream(rs.stream.color, self.width, self.height,
-                             rs.format.rgb8, self.fps)
-        config.enable_stream(rs.stream.depth, self.width, self.height,
-                             rs.format.z16, self.fps)
+        if need_color:
+            config.enable_stream(rs.stream.color, self.width, self.height,
+                                 rs.format.rgb8, self.fps)
+        if need_depth:
+            config.enable_stream(rs.stream.depth, self.width, self.height,
+                                 rs.format.z16, self.fps)
         self._pipeline.start(config)
 
-        # Align depth to color
-        self._align = rs.align(rs.stream.color)
+        if need_color and need_depth:
+            self._align = rs.align(rs.stream.color)
 
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
-        print(f"[RealsenseCamera] Started ({self.width}x{self.height} @ {self.fps}fps)")
+        print(f"[RealsenseCamera] Started ({self.width}x{self.height} @ {self.fps}fps, streams={self.streams})")
 
     def stop(self):
         """Stop capture and release resources."""
@@ -65,23 +87,40 @@ class RealsenseCamera:
             return self._color_frame.copy(), self._depth_frame.copy(), self._timestamp
 
     def _capture_loop(self):
-        """Background loop: wait for aligned frames and store them."""
+        """Background loop: wait for frames and store them."""
+        need_color = self.streams in ("rgb", "rgbd")
+        need_depth = self.streams in ("depth", "rgbd")
+        use_align = need_color and need_depth and self._align is not None
+        frame_count = 0
         while self._running:
             try:
-                frames = self._pipeline.wait_for_frames(timeout_ms=1000)
-            except Exception:
+                frames = self._pipeline.wait_for_frames(timeout_ms=5000)
+            except Exception as e:
+                print(f"[RealsenseCamera] wait_for_frames error: {e}")
                 continue
 
-            aligned = self._align.process(frames)
-            color = aligned.get_color_frame()
-            depth = aligned.get_depth_frame()
-            if not color or not depth:
-                continue
+            if use_align:
+                frames = self._align.process(frames)
 
-            color_arr = np.asanyarray(color.get_data())  # RGB uint8
-            depth_arr = np.asanyarray(depth.get_data())  # uint16 mm
+            color_arr = None
+            depth_arr = None
+            if need_color:
+                cf = frames.get_color_frame()
+                if cf:
+                    color_arr = np.asanyarray(cf.get_data())
+            if need_depth:
+                df = frames.get_depth_frame()
+                if df:
+                    depth_arr = np.asanyarray(df.get_data())
 
             with self._lock:
-                self._color_frame = color_arr
-                self._depth_frame = depth_arr
+                if color_arr is not None:
+                    self._color_frame = color_arr
+                if depth_arr is not None:
+                    self._depth_frame = depth_arr
                 self._timestamp = time.time()
+            frame_count += 1
+            if frame_count % 100 == 1:
+                print(f"[RealsenseCamera] frame {frame_count}"
+                      + (f", color {color_arr.shape} mean={color_arr.mean():.1f}" if color_arr is not None else "")
+                      + (f", depth {depth_arr.shape}" if depth_arr is not None else ""))

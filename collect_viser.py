@@ -18,7 +18,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(description="Viser-based PIPER data collection")
-    parser.add_argument("--output_dir", type=str, default="./data",
+    parser.add_argument("--output_dir", type=str, default="./data/records",
                         help="Directory to save episode HDF5 files")
     parser.add_argument("--can-interface", type=str, default="gs_usb",
                         choices=["gs_usb", "socketcan"],
@@ -35,12 +35,17 @@ def main():
                         help="Camera frame height")
     parser.add_argument("--fps", type=int, default=30,
                         help="Target capture frame rate")
+    parser.add_argument("--streams", type=str, default="rgb",
+                        choices=["rgb", "depth", "rgbd"],
+                        help="Camera streams: rgb, depth, or rgbd (default: rgb)")
     parser.add_argument("--no-camera", action="store_true",
                         help="Run without camera (dummy black frames)")
     parser.add_argument("--no-arm", action="store_true",
                         help="Run without arm (dummy zero state)")
     parser.add_argument("--demo", action="store_true",
                         help="Demo mode: no hardware required (implies --no-arm --no-camera)")
+    parser.add_argument("--world-config", type=str, default="./data/world_config.json",
+                        help="Path to world frame calibration JSON")
     args = parser.parse_args()
 
     # Demo mode enables all no-hardware flags
@@ -76,11 +81,20 @@ def main():
             width=args.width,
             height=args.height,
             fps=args.fps,
+            streams=args.streams,
         )
         camera.start()
 
     # Create writer
     writer = HDF5Writer(output_dir=args.output_dir)
+
+    # Load world frame config
+    from utils.world_frame import load_world_config
+    world_config = load_world_config(args.world_config)
+    if world_config is not None:
+        print(f"[WorldFrame] Loaded calibration from {args.world_config}")
+    else:
+        print(f"[WorldFrame] No calibration found at {args.world_config} — using base frame")
 
     # Create and run the viser app
     app = ViserDataCollectorApp(
@@ -92,6 +106,9 @@ def main():
         frame_w=args.width,
         frame_h=args.height,
         demo_mode=args.demo,
+        world_config=world_config,
+        streams=args.streams,
+        output_dir=args.output_dir,
     )
 
     try:

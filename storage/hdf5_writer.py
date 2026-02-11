@@ -16,6 +16,7 @@ class HDF5Writer:
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._world_config = None
         self.reset()
 
     def reset(self):
@@ -23,11 +24,16 @@ class HDF5Writer:
         self._qpos = []
         self._qvel = []
         self._gripper = []
+        self._eef_pos = []
         self._color = []
         self._depth = []
         self._timestamps = []
         self._action_qpos = []
         self._action_gripper = []
+
+    def set_world_config(self, world_config: dict | None) -> None:
+        """Set world frame config to be written with each episode."""
+        self._world_config = world_config
 
     def add_frame(
         self,
@@ -39,6 +45,7 @@ class HDF5Writer:
         timestamp: float,
         action_qpos: np.ndarray | None = None,
         action_gripper: float | None = None,
+        eef_pos: np.ndarray | None = None,
     ):
         """Buffer a single frame of data.
 
@@ -51,6 +58,8 @@ class HDF5Writer:
             timestamp: Unix timestamp.
             action_qpos: (6,) action joint positions. If None, uses qpos.
             action_gripper: Action gripper width. If None, uses gripper.
+            eef_pos: (3,) EEF position (meters). If world config is set, in
+                world frame; otherwise in base frame.
         """
         self._qpos.append(qpos.copy())
         self._qvel.append(qvel.copy())
@@ -62,6 +71,8 @@ class HDF5Writer:
             self._action_qpos.append(action_qpos.copy())
         if action_gripper is not None:
             self._action_gripper.append(action_gripper)
+        if eef_pos is not None:
+            self._eef_pos.append(eef_pos.copy())
 
     @property
     def num_frames(self) -> int:
@@ -97,6 +108,11 @@ class HDF5Writer:
             obs.create_dataset("qvel", data=qvel)
             obs.create_dataset("gripper", data=gripper)
 
+            # EEF position (if recorded)
+            if self._eef_pos:
+                eef_pos_arr = np.array(self._eef_pos, dtype=np.float64)  # (N, 3)
+                obs.create_dataset("eef_pos", data=eef_pos_arr)
+
             imgs = obs.create_group("images")
             imgs.create_dataset("color", data=color, compression="gzip",
                                 compression_opts=4)
@@ -118,6 +134,16 @@ class HDF5Writer:
 
             # timestamps
             f.create_dataset("timestamps", data=timestamps)
+
+            # world frame calibration
+            if self._world_config is not None:
+                T_bw = np.asarray(self._world_config["T_base_from_world"], dtype=np.float64)
+                T_wb = np.asarray(self._world_config["T_world_from_base"], dtype=np.float64)
+                f.create_dataset("T_base_from_world", data=T_bw)
+                f.create_dataset("T_world_from_base", data=T_wb)
+                f.attrs["world_frame_calibrated"] = True
+            else:
+                f.attrs["world_frame_calibrated"] = False
 
             # metadata
             f.attrs["num_frames"] = len(timestamps)

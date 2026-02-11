@@ -33,6 +33,11 @@ from utils.urdf_loader import (
     euler_deg_to_wxyz,
     wxyz_to_euler_deg,
 )
+from utils.world_frame import (
+    pose_base_to_world,
+    pose_world_to_base,
+    add_world_frame_visual,
+)
 
 
 class ArmControlApp:
@@ -44,6 +49,7 @@ class ArmControlApp:
         port: int = 8080,
         speed: int = 50,
         demo_mode: bool = False,
+        world_config: dict | None = None,
     ):
         self._piper = piper
         self._port = port
@@ -52,6 +58,17 @@ class ArmControlApp:
         self._executing = False
         self._last_ik_cfg = None
         self._demo_mode = demo_mode
+        self._world_config = world_config
+        if world_config is not None:
+            self._T_base_from_world = np.asarray(
+                world_config["T_base_from_world"], dtype=np.float64
+            )
+            self._T_world_from_base = np.asarray(
+                world_config["T_world_from_base"], dtype=np.float64
+            )
+        else:
+            self._T_base_from_world = None
+            self._T_world_from_base = None
 
     def run(self):
         """Start the viser server and run the main loop."""
@@ -63,6 +80,10 @@ class ArmControlApp:
 
         urdf = load_piper_urdf()
         self._urdf_vis = ViserUrdf(server, urdf, root_node_name="/base")
+
+        # World frame calibration visualization
+        if self._world_config is not None:
+            add_world_frame_visual(server, self._world_config)
 
         # Initial EEF position for the IK target handle
         init_pos = (0.057, 0.0, 0.215)  # meters (HOME position)
@@ -76,7 +97,11 @@ class ArmControlApp:
         )
 
         # --- Sidebar GUI ---
-        with server.gui.add_folder("EEF Pose (meters/degrees)"):
+        pose_label = (
+            "EEF Pose - World Frame" if self._world_config is not None
+            else "EEF Pose (meters/degrees)"
+        )
+        with server.gui.add_folder(pose_label):
             self._x_input = server.gui.add_number("X (m)", initial_value=0.057, step=0.01)
             self._y_input = server.gui.add_number("Y (m)", initial_value=0.0, step=0.01)
             self._z_input = server.gui.add_number("Z (m)", initial_value=0.215, step=0.01)
@@ -131,71 +156,92 @@ class ArmControlApp:
             print("\n[ArmControl] Shutting down...")
 
     def _main_loop(self):
-        """Main loop: synchronize 3D handle and input fields bidirectionally."""
-        while True:
-            # Get current handle position
-            handle_pos = np.array(self._ik_target.position)
-            handle_wxyz = np.array(self._ik_target.wxyz)
+        """Main loop: synchronize 3D handle and input fields bidirectionally.
 
-            # Get current input values
-            input_pos = np.array([
+        When world frame is active, the input fields show world-frame coordinates.
+        The 3D handle and IK solver always work in base frame.
+        """
+        while True:
+            # Get current handle position (always in base frame)
+            handle_pos_base = np.array(self._ik_target.position)
+            handle_wxyz_base = np.array(self._ik_target.wxyz)
+
+            # Get current input values (in world frame if active, else base)
+            input_pos_display = np.array([
                 self._x_input.value,
                 self._y_input.value,
                 self._z_input.value,
             ])
-            input_wxyz = euler_deg_to_wxyz(
+            input_wxyz_display = euler_deg_to_wxyz(
                 self._rx_input.value,
                 self._ry_input.value,
                 self._rz_input.value,
             )
 
+            # Convert display input → base frame for comparison
+            if self._T_base_from_world is not None:
+                input_pos_base, input_wxyz_base = pose_world_to_base(
+                    input_pos_display, input_wxyz_display, self._T_base_from_world
+                )
+            else:
+                input_pos_base = input_pos_display
+                input_wxyz_base = input_wxyz_display
+
             # Check if handle was dragged (position changed from last frame)
             handle_moved = (
-                np.linalg.norm(handle_pos - self._last_handle_pos) > 1e-6 or
-                np.linalg.norm(handle_wxyz - self._last_handle_wxyz) > 1e-6
+                np.linalg.norm(handle_pos_base - self._last_handle_pos) > 1e-6 or
+                np.linalg.norm(handle_wxyz_base - self._last_handle_wxyz) > 1e-6
             )
 
-            # Check if input fields changed
+            # Check if input fields changed (compare base-frame versions)
             input_changed = (
-                np.linalg.norm(input_pos - self._last_handle_pos) > 1e-6 or
-                np.linalg.norm(input_wxyz - self._last_handle_wxyz) > 1e-6
+                np.linalg.norm(input_pos_base - self._last_handle_pos) > 1e-6 or
+                np.linalg.norm(input_wxyz_base - self._last_handle_wxyz) > 1e-6
             )
 
             if handle_moved:
-                # Handle was dragged → update input fields to match
-                self._x_input.value = float(handle_pos[0])
-                self._y_input.value = float(handle_pos[1])
-                self._z_input.value = float(handle_pos[2])
-                rx, ry, rz = wxyz_to_euler_deg(handle_wxyz)
+                # Handle was dragged (base frame) → update input fields
+                if self._T_world_from_base is not None:
+                    # Convert base → world for display
+                    disp_pos, disp_wxyz = pose_base_to_world(
+                        handle_pos_base, handle_wxyz_base, self._T_world_from_base
+                    )
+                else:
+                    disp_pos, disp_wxyz = handle_pos_base, handle_wxyz_base
+
+                self._x_input.value = float(disp_pos[0])
+                self._y_input.value = float(disp_pos[1])
+                self._z_input.value = float(disp_pos[2])
+                rx, ry, rz = wxyz_to_euler_deg(disp_wxyz)
                 self._rx_input.value = rx
                 self._ry_input.value = ry
                 self._rz_input.value = rz
-                # Use handle position for IK
-                pos, wxyz = handle_pos, handle_wxyz
-                self._last_handle_pos = handle_pos.copy()
-                self._last_handle_wxyz = handle_wxyz.copy()
+                # IK uses base frame
+                pos, wxyz = handle_pos_base, handle_wxyz_base
+                self._last_handle_pos = handle_pos_base.copy()
+                self._last_handle_wxyz = handle_wxyz_base.copy()
 
             elif input_changed:
-                # Input fields changed → update handle to match
-                self._ik_target.position = tuple(input_pos)
-                self._ik_target.wxyz = tuple(input_wxyz)
-                # Use input position for IK
-                pos, wxyz = input_pos, input_wxyz
-                self._last_handle_pos = input_pos.copy()
-                self._last_handle_wxyz = input_wxyz.copy()
+                # Input fields changed → update handle (base frame)
+                self._ik_target.position = tuple(input_pos_base)
+                self._ik_target.wxyz = tuple(input_wxyz_base)
+                # IK uses base frame
+                pos, wxyz = input_pos_base, input_wxyz_base
+                self._last_handle_pos = input_pos_base.copy()
+                self._last_handle_wxyz = input_wxyz_base.copy()
 
             else:
-                # No change, use current position
-                pos, wxyz = handle_pos, handle_wxyz
+                # No change, use current base-frame position
+                pos, wxyz = handle_pos_base, handle_wxyz_base
 
-            # Solve IK and update arm visualization
+            # Solve IK and update arm visualization (always base frame)
             cfg = self._ik_solver.solve(pos, wxyz)
             if cfg is not None:
                 self._last_ik_cfg = cfg
                 self._urdf_vis.update_cfg(cfg)
-                self._ik_status.content = "**IK:** ✓ Solution found"
+                self._ik_status.content = "**IK:** Solution found"
             else:
-                self._ik_status.content = "**IK:** ✗ No solution"
+                self._ik_status.content = "**IK:** No solution"
 
             time.sleep(0.03)  # ~30 FPS
 

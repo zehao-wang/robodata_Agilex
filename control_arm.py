@@ -37,6 +37,8 @@ def main():
                         help="Run without physical arm (GUI preview only)")
     parser.add_argument("--demo", action="store_true",
                         help="Demo mode: no hardware required (implies --no-arm)")
+    parser.add_argument("--world-config", type=str, default="./data/world_config.json",
+                        help="Path to world frame calibration JSON")
     args = parser.parse_args()
 
     # Demo mode enables no-hardware flags
@@ -45,6 +47,14 @@ def main():
         print("[Demo Mode] Running without hardware - IK preview and visualization only")
 
     from gui.arm_control_app import ArmControlApp
+    from utils.world_frame import load_world_config
+
+    # Load world frame config
+    world_config = load_world_config(args.world_config)
+    if world_config is not None:
+        print(f"[WorldFrame] Loaded calibration from {args.world_config}")
+    else:
+        print(f"[WorldFrame] No calibration found at {args.world_config} — using base frame")
 
     piper = None
     if not args.no_arm:
@@ -77,6 +87,7 @@ def main():
         port=args.port,
         speed=args.speed,
         demo_mode=args.demo,
+        world_config=world_config,
     )
 
     try:
