@@ -32,6 +32,23 @@ def _dh_matrix(alpha, a, theta, d):
     ])
 
 
+# Distance from link6 (gripper_base) origin to fingertip center, along link6 z-axis.
+# Derived from URDF: finger joint roots at z=135.8mm, finger CoM at z=86.6mm,
+# fingertip (CoM + 49.2mm extension) at z≈37mm from link6.
+PIPER_FINGERTIP_OFFSET_M = 0.037
+
+
+def fingertip_center_from_T_ee(T_ee: np.ndarray) -> np.ndarray:
+    """Return fingertip center position in meters from DH frame-6 transform (in mm).
+
+    The fingertip center is PIPER_FINGERTIP_OFFSET_M ahead of the gripper_base
+    (link6) origin along the link6 z-axis (approach direction).
+    """
+    pos_m = T_ee[:3, 3] / 1000.0
+    z_axis = T_ee[:3, 2]
+    return pos_m + z_axis * PIPER_FINGERTIP_OFFSET_M
+
+
 def forward_kinematics(joint_angles):
     """Compute 3D positions of each joint given 6 joint angles (radians).
 

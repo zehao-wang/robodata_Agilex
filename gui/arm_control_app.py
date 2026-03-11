@@ -11,6 +11,7 @@ import threading
 import time
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 import viser
 from viser.extras import ViserUrdf
 
@@ -27,6 +28,7 @@ from robot.arm_controller import (
     RAW_TO_DEG,
 )
 from solver.pyroki_ik import PiperIKSolver
+from utils.arm_visualizer import PIPER_FINGERTIP_OFFSET_M
 from utils.urdf_loader import (
     load_piper_urdf,
     can_qpos_to_urdf_cfg_with_gripper,
@@ -85,9 +87,15 @@ class ArmControlApp:
         if self._world_config is not None:
             add_world_frame_visual(server, self._world_config)
 
-        # Initial EEF position for the IK target handle
-        init_pos = (0.057, 0.0, 0.215)  # meters (HOME position)
+        # Initial IK target handle position = fingertip center at home.
+        # gripper_base home: (0.057, 0.0, 0.215) m, orientation ry=85°.
+        # z-axis at ry=85°: [sin85°, 0, cos85°] ≈ [0.996, 0, 0.087]
+        # fingertip = gripper_base + z * FINGERTIP_OFFSET
         init_wxyz = euler_deg_to_wxyz(0, 85, 0)
+        _R_home = Rotation.from_quat([init_wxyz[1], init_wxyz[2], init_wxyz[3], init_wxyz[0]]).as_matrix()
+        _gb_home = np.array([0.057, 0.0, 0.215])
+        _tip_home = _gb_home + _R_home[:, 2] * PIPER_FINGERTIP_OFFSET_M
+        init_pos = tuple(_tip_home)
 
         self._ik_target = server.scene.add_transform_controls(
             "/ik_target",
@@ -154,6 +162,16 @@ class ArmControlApp:
             self._main_loop()
         except KeyboardInterrupt:
             print("\n[ArmControl] Shutting down...")
+
+    def _tip_to_gripper_base(self, tip_pos: np.ndarray, tip_wxyz: np.ndarray) -> np.ndarray:
+        """Convert fingertip target position → gripper_base target position.
+
+        The IK handle represents the fingertip center. IK solver targets gripper_base
+        (link6), so we subtract the fixed fingertip offset along the approach z-axis.
+        """
+        xyzw = np.array([tip_wxyz[1], tip_wxyz[2], tip_wxyz[3], tip_wxyz[0]])
+        R = Rotation.from_quat(xyzw).as_matrix()
+        return tip_pos - R[:, 2] * PIPER_FINGERTIP_OFFSET_M
 
     def _main_loop(self):
         """Main loop: synchronize 3D handle and input fields bidirectionally.
@@ -234,8 +252,10 @@ class ArmControlApp:
                 # No change, use current base-frame position
                 pos, wxyz = handle_pos_base, handle_wxyz_base
 
-            # Solve IK and update arm visualization (always base frame)
-            cfg = self._ik_solver.solve(pos, wxyz)
+            # Solve IK and update arm visualization (always base frame).
+            # Handle position = fingertip target; convert to gripper_base for IK.
+            gripper_base_pos = self._tip_to_gripper_base(pos, wxyz)
+            cfg = self._ik_solver.solve(gripper_base_pos, wxyz)
             if cfg is not None:
                 self._last_ik_cfg = cfg
                 self._urdf_vis.update_cfg(cfg)
@@ -282,9 +302,10 @@ class ArmControlApp:
             cur_cfg_full = np.zeros(8)
             cur_cfg_full[:6] = cur_cfg
 
-            # Get target EEF pose
-            target_pos = np.array(self._ik_target.position)
+            # Get target EEF pose (handle = fingertip; convert to gripper_base for IK)
+            tip_pos = np.array(self._ik_target.position)
             target_wxyz = np.array(self._ik_target.wxyz)
+            target_pos = self._tip_to_gripper_base(tip_pos, target_wxyz)
 
             speed = self._speed_slider.value
 
@@ -389,14 +410,16 @@ class ArmControlApp:
 
     def _on_home_click(self, _event):
         """Go to home position."""
-        # Set home position - this will trigger the main loop to update everything
-        home_pos = np.array([0.057, 0.0, 0.215])
         home_wxyz = euler_deg_to_wxyz(0, 85, 0)
+        # Fingertip home = gripper_base home + offset along approach z-axis
+        _R = Rotation.from_quat([home_wxyz[1], home_wxyz[2], home_wxyz[3], home_wxyz[0]]).as_matrix()
+        _gb_home = np.array([0.057, 0.0, 0.215])
+        home_pos = _gb_home + _R[:, 2] * PIPER_FINGERTIP_OFFSET_M
 
         # Update input fields and handle
-        self._x_input.value = 0.057
-        self._y_input.value = 0.0
-        self._z_input.value = 0.215
+        self._x_input.value = float(home_pos[0])
+        self._y_input.value = float(home_pos[1])
+        self._z_input.value = float(home_pos[2])
         self._rx_input.value = 0.0
         self._ry_input.value = 85.0
         self._rz_input.value = 0.0
