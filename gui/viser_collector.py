@@ -20,8 +20,11 @@ from viser.extras import ViserUrdf
 
 from robot.arm_reader import ArmReader, ArmState
 from storage.hdf5_writer import HDF5Writer
-from utils.arm_visualizer import forward_kinematics, fingertip_center_from_T_ee
-from utils.urdf_loader import load_piper_urdf, can_qpos_to_urdf_cfg_with_gripper
+from utils.urdf_loader import (
+    load_piper_urdf,
+    can_qpos_to_urdf_cfg_with_gripper,
+    fingertip_center_from_urdf_cfg,
+)
 from utils.world_frame import point_base_to_world, add_world_frame_visual
 
 
@@ -118,6 +121,7 @@ class ViserDataCollectorApp:
         server.scene.add_grid("/ground", width=2, height=2, cell_size=0.1)
 
         urdf = load_piper_urdf()
+        self._urdf = urdf
         self._urdf_vis = ViserUrdf(server, urdf, root_node_name="/base")
 
         # World frame calibration visualization
@@ -276,9 +280,8 @@ class ViserDataCollectorApp:
             # Update camera display
             self._color_handle.image = color
 
-            # Compute fingertip center position via FK
-            _, T_ee = forward_kinematics(display_state.qpos)
-            eef_pos_base = fingertip_center_from_T_ee(T_ee)
+            # Compute fingertip endpoint center via URDF FK (link7/link8 tip midpoint)
+            eef_pos_base = fingertip_center_from_urdf_cfg(self._urdf, cfg)
             if self._T_world_from_base is not None:
                 eef_pos = point_base_to_world(eef_pos_base, self._T_world_from_base)
             else:

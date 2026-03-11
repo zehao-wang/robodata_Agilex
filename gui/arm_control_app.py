@@ -88,9 +88,6 @@ class ArmControlApp:
             add_world_frame_visual(server, self._world_config)
 
         # Initial IK target handle position = fingertip center at home.
-        # gripper_base home: (0.057, 0.0, 0.215) m, orientation ry=85°.
-        # z-axis at ry=85°: [sin85°, 0, cos85°] ≈ [0.996, 0, 0.087]
-        # fingertip = gripper_base + z * FINGERTIP_OFFSET
         init_wxyz = euler_deg_to_wxyz(0, 85, 0)
         _R_home = Rotation.from_quat([init_wxyz[1], init_wxyz[2], init_wxyz[3], init_wxyz[0]]).as_matrix()
         _gb_home = np.array([0.057, 0.0, 0.215])
@@ -109,13 +106,21 @@ class ArmControlApp:
             "EEF Pose - World Frame" if self._world_config is not None
             else "EEF Pose (meters/degrees)"
         )
+        if self._T_world_from_base is not None:
+            init_pos_disp, init_wxyz_disp = pose_base_to_world(
+                _tip_home, init_wxyz, self._T_world_from_base
+            )
+            init_rx, init_ry, init_rz = wxyz_to_euler_deg(init_wxyz_disp)
+        else:
+            init_pos_disp, init_wxyz_disp = _tip_home, init_wxyz
+            init_rx, init_ry, init_rz = 0.0, 85.0, 0.0
         with server.gui.add_folder(pose_label):
-            self._x_input = server.gui.add_number("X (m)", initial_value=0.057, step=0.01)
-            self._y_input = server.gui.add_number("Y (m)", initial_value=0.0, step=0.01)
-            self._z_input = server.gui.add_number("Z (m)", initial_value=0.215, step=0.01)
-            self._rx_input = server.gui.add_number("RX (deg)", initial_value=0.0, step=1.0)
-            self._ry_input = server.gui.add_number("RY (deg)", initial_value=85.0, step=1.0)
-            self._rz_input = server.gui.add_number("RZ (deg)", initial_value=0.0, step=1.0)
+            self._x_input = server.gui.add_number("X (m)", initial_value=float(init_pos_disp[0]), step=0.01)
+            self._y_input = server.gui.add_number("Y (m)", initial_value=float(init_pos_disp[1]), step=0.01)
+            self._z_input = server.gui.add_number("Z (m)", initial_value=float(init_pos_disp[2]), step=0.01)
+            self._rx_input = server.gui.add_number("RX (deg)", initial_value=float(init_rx), step=1.0)
+            self._ry_input = server.gui.add_number("RY (deg)", initial_value=float(init_ry), step=1.0)
+            self._rz_input = server.gui.add_number("RZ (deg)", initial_value=float(init_rz), step=1.0)
 
         # Track last handle position to detect drag changes
         self._last_handle_pos = np.array(init_pos)
@@ -416,13 +421,22 @@ class ArmControlApp:
         _gb_home = np.array([0.057, 0.0, 0.215])
         home_pos = _gb_home + _R[:, 2] * PIPER_FINGERTIP_OFFSET_M
 
-        # Update input fields and handle
-        self._x_input.value = float(home_pos[0])
-        self._y_input.value = float(home_pos[1])
-        self._z_input.value = float(home_pos[2])
-        self._rx_input.value = 0.0
-        self._ry_input.value = 85.0
-        self._rz_input.value = 0.0
+        # Update input fields and handle. Inputs follow world frame if loaded.
+        if self._T_world_from_base is not None:
+            home_pos_disp, home_wxyz_disp = pose_base_to_world(
+                home_pos, home_wxyz, self._T_world_from_base
+            )
+            home_rx, home_ry, home_rz = wxyz_to_euler_deg(home_wxyz_disp)
+        else:
+            home_pos_disp = home_pos
+            home_rx, home_ry, home_rz = 0.0, 85.0, 0.0
+
+        self._x_input.value = float(home_pos_disp[0])
+        self._y_input.value = float(home_pos_disp[1])
+        self._z_input.value = float(home_pos_disp[2])
+        self._rx_input.value = float(home_rx)
+        self._ry_input.value = float(home_ry)
+        self._rz_input.value = float(home_rz)
         self._ik_target.position = tuple(home_pos)
         self._ik_target.wxyz = tuple(home_wxyz)
         self._last_handle_pos = home_pos.copy()
@@ -439,7 +453,8 @@ class ArmControlApp:
                 self._arm_status.content = "**Arm:** Demo - at home"
             return
 
-        cfg = self._ik_solver.solve(home_pos, home_wxyz)
+        home_gripper_base_pos = self._tip_to_gripper_base(home_pos, home_wxyz)
+        cfg = self._ik_solver.solve(home_gripper_base_pos, home_wxyz)
         if cfg is not None:
             self._last_ik_cfg = cfg
             thread = threading.Thread(target=self._execute_motion, daemon=True)

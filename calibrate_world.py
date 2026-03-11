@@ -20,8 +20,11 @@ import numpy as np
 import viser
 from viser.extras import ViserUrdf
 
-from utils.arm_visualizer import forward_kinematics, fingertip_center_from_T_ee
-from utils.urdf_loader import load_piper_urdf, can_qpos_to_urdf_cfg_with_gripper
+from utils.urdf_loader import (
+    load_piper_urdf,
+    can_qpos_to_urdf_cfg_with_gripper,
+    fingertip_center_from_urdf_cfg,
+)
 from utils.world_frame import compute_world_frame, save_world_config
 
 
@@ -103,8 +106,8 @@ def main():
             return demo_points[min(n_recorded, 3)]
         else:
             state = arm_reader.get_state()
-            _, T_ee = forward_kinematics(state.qpos)
-            return fingertip_center_from_T_ee(T_ee)
+            cfg = can_qpos_to_urdf_cfg_with_gripper(state.qpos, state.gripper)
+            return fingertip_center_from_urdf_cfg(urdf, cfg)
 
     def _make_record_handler(idx):
         def handler(_event):

@@ -32,10 +32,10 @@ def _dh_matrix(alpha, a, theta, d):
     ])
 
 
-# Distance from link6 (gripper_base) origin to fingertip center, along link6 z-axis.
-# Derived from URDF: finger joint roots at z=135.8mm, finger CoM at z=86.6mm,
-# fingertip (CoM + 49.2mm extension) at z≈37mm from link6.
-PIPER_FINGERTIP_OFFSET_M = 0.037
+# Distance from gripper_base origin to fingertip endpoint center, along z-axis.
+# Consistent with URDF fingertip definition in utils.urdf_loader:
+# midpoint of left/right finger distal tip faces (joint7/joint8 origins at z=0.1358m).
+PIPER_FINGERTIP_OFFSET_M = 0.1358
 
 
 def fingertip_center_from_T_ee(T_ee: np.ndarray) -> np.ndarray:

@@ -14,6 +14,13 @@ _URDF_PATH = _ASSETS_DIR / "urdf" / "piper_description.urdf"
 
 # URDF link name for the end-effector (fixed to link6)
 PIPER_EEF_LINK_NAME = "gripper_base"
+PIPER_LEFT_FINGER_LINK_NAME = "link7"
+PIPER_RIGHT_FINGER_LINK_NAME = "link8"
+
+# Fingertip endpoint (center of tip face) in each finger link local frame, meters.
+# In the exported PIPER finger meshes, the distal tip face lies at y≈0.
+# We use the center of that face (z≈0.011) as the fingertip contact point.
+_FINGERTIP_LOCAL_IN_FINGER = np.array([0.0, 0.0, 0.0110], dtype=np.float64)
 
 # The 6 revolute actuated joint names in URDF order
 PIPER_ARM_JOINT_NAMES = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
@@ -88,6 +95,32 @@ def can_qpos_to_urdf_cfg_with_gripper(qpos_rad: np.ndarray, gripper_m: float) ->
     cfg[6] = np.clip(half, 0.0, 0.035)      # joint7 (0..0.035)
     cfg[7] = np.clip(-half, -0.035, 0.0)     # joint8 (-0.035..0)
     return cfg
+
+
+def fingertip_center_from_urdf_cfg(urdf, cfg: np.ndarray) -> np.ndarray:
+    """Compute fingertip endpoint center in base frame from URDF cfg.
+
+    The point is defined as the midpoint of the two fingertip endpoints
+    (left/right fingers, links link7/link8).
+
+    Args:
+        urdf: yourdfpy.URDF instance (PIPER model).
+        cfg: (8,) URDF actuated-joint configuration.
+
+    Returns:
+        (3,) fingertip center position in base frame, meters.
+    """
+    cfg = np.asarray(cfg, dtype=np.float64)
+    assert cfg.shape == (8,), f"Expected (8,), got {cfg.shape}"
+    cfg_dict = {name: float(v) for name, v in zip(urdf.actuated_joint_names, cfg)}
+    urdf.update_cfg(cfg_dict)
+
+    T_l = urdf.get_transform(PIPER_LEFT_FINGER_LINK_NAME)
+    T_r = urdf.get_transform(PIPER_RIGHT_FINGER_LINK_NAME)
+
+    p_l = (T_l @ np.r_[_FINGERTIP_LOCAL_IN_FINGER, 1.0])[:3]
+    p_r = (T_r @ np.r_[_FINGERTIP_LOCAL_IN_FINGER, 1.0])[:3]
+    return 0.5 * (p_l + p_r)
 
 
 def euler_deg_to_wxyz(rx: float, ry: float, rz: float) -> np.ndarray:
