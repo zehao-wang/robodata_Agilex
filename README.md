@@ -1,5 +1,7 @@
 # Agilex PIPER Data Collection & Control System
 
+![Python](https://img.shields.io/badge/python-3.11-blue?logo=python&logoColor=white)
+
 Data collection and arm control system for the Agilex PIPER dual-arm setup (teaching + operation arms) via CAN bus. Captures joint angles, gripper width, and D435i RGBD video in HDF5 format compatible with ACT / Diffusion Policy frameworks.
 
 ## Hardware
@@ -9,6 +11,15 @@ Data collection and arm control system for the Agilex PIPER dual-arm setup (teac
 - Intel RealSense D435i depth camera (USB-C)
 
 ## Install
+
+Clone pyroki (IK solver) from source first (Python 3.12+; 3.10–3.11 also supported,
+see [pyroki docs](https://chungmin99.github.io/pyroki/)):
+
+```bash
+git clone https://github.com/chungmin99/pyroki.git
+```
+
+Then install the remaining dependencies:
 
 ```bash
 pip install -r requirements.txt
