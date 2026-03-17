@@ -35,6 +35,8 @@ def main():
                         help="Camera frame height")
     parser.add_argument("--fps", type=int, default=30,
                         help="Target capture frame rate")
+    parser.add_argument("--max-sync-dt-ms", type=float, default=50.0,
+                        help="Maximum allowed arm/camera timestamp delta in milliseconds")
     parser.add_argument("--streams", type=str, default="rgb",
                         choices=["rgb", "depth", "rgbd"],
                         help="Camera streams: rgb, depth, or rgbd (default: rgb)")
@@ -58,7 +60,7 @@ def main():
     from storage.hdf5_writer import HDF5Writer
     from gui.viser_collector import ViserDataCollectorApp
 
-    # Create arm reader (reads slave arm feedback from CAN bus)
+    # Create arm reader
     if args.no_arm:
         arm_reader = None
         print("[Arm] Skipped (--no-arm mode)")
@@ -74,16 +76,27 @@ def main():
     # Create camera
     if args.no_camera:
         camera = None
+        camera_sources = []
         print("[Camera] Skipped (--no-camera mode)")
     else:
-        from camera.realsense import RealsenseCamera
-        camera = RealsenseCamera(
+        from camera import CameraManager
+
+        camera = CameraManager(
             width=args.width,
             height=args.height,
             fps=args.fps,
             streams=args.streams,
         )
-        camera.start()
+        camera_sources = camera.sources
+        print(f"[Camera] Discovered {len(camera_sources)} candidate source(s)")
+        for source in camera_sources:
+            print(f"  - {source.label}")
+        active_source_id = camera.start_first_available()
+        if active_source_id is None:
+            print("[Camera] No available camera could be started, using blank frames")
+        else:
+            active_label = camera.source_id_to_label()[active_source_id]
+            print(f"[Camera] Auto-selected: {active_label}")
 
     # Create writer
     writer = HDF5Writer(output_dir=args.output_dir)
@@ -109,6 +122,8 @@ def main():
         world_config=world_config,
         streams=args.streams,
         output_dir=args.output_dir,
+        camera_sources=camera_sources,
+        max_sync_dt_ms=args.max_sync_dt_ms,
     )
 
     try:

@@ -1,17 +1,14 @@
-"""HDF5 episode writer for imitation learning data.
+"""Episode writer for folder-based recordings."""
 
-Output format compatible with ACT / Diffusion Policy frameworks.
-"""
-
-import os
+import json
 from pathlib import Path
 
-import h5py
+import cv2
 import numpy as np
 
 
 class HDF5Writer:
-    """Collects frames in memory then writes a single HDF5 episode file."""
+    """Buffers frames in memory and writes each episode as a folder."""
 
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
@@ -20,16 +17,9 @@ class HDF5Writer:
         self.reset()
 
     def reset(self):
-        """Clear all buffered data."""
-        self._qpos = []
-        self._qvel = []
-        self._gripper = []
-        self._eef_pos = []
-        self._color = []
-        self._depth = []
-        self._timestamps = []
-        self._action_qpos = []
-        self._action_gripper = []
+        """Clear buffered video frames and per-frame metadata."""
+        self._frames = []
+        self._frame_records = []
 
     def set_world_config(self, world_config: dict | None) -> None:
         """Set world frame config to be written with each episode."""
@@ -43,125 +33,157 @@ class HDF5Writer:
         color: np.ndarray,
         depth: np.ndarray,
         timestamp: float,
+        arm_timestamp: float | None = None,
+        camera_timestamp: float | None = None,
+        sync_delta_ms: float | None = None,
+        sync_ok: bool | None = None,
         action_qpos: np.ndarray | None = None,
         action_gripper: float | None = None,
         eef_pos: np.ndarray | None = None,
     ):
-        """Buffer a single frame of data.
+        """Buffer a single frame of RGB video and aligned arm metadata."""
+        frame_index = len(self._frame_records)
+        self._frames.append(color.copy())
 
-        Args:
-            qpos: (6,) joint positions in radians (observation).
-            qvel: (6,) joint velocities.
-            gripper: Gripper width in meters (observation).
-            color: (H, W, 3) uint8 RGB image.
-            depth: (H, W) uint16 depth in mm.
-            timestamp: Unix timestamp.
-            action_qpos: (6,) action joint positions. If None, uses qpos.
-            action_gripper: Action gripper width. If None, uses gripper.
-            eef_pos: (3,) EEF position (meters). If world config is set, in
-                world frame; otherwise in base frame.
-        """
-        self._qpos.append(qpos.copy())
-        self._qvel.append(qvel.copy())
-        self._gripper.append(gripper)
-        self._color.append(color.copy())
-        self._depth.append(depth.copy())
-        self._timestamps.append(timestamp)
+        record = {
+            "frame_index": frame_index,
+            "timestamp": float(timestamp),
+            "record_timestamp": float(timestamp),
+            "qpos": np.asarray(qpos, dtype=np.float64).tolist(),
+            "qvel": np.asarray(qvel, dtype=np.float64).tolist(),
+            "gripper": float(gripper),
+            "depth_available": bool(np.max(depth) > 0),
+        }
+        if arm_timestamp is not None:
+            record["arm_timestamp"] = float(arm_timestamp)
+        if camera_timestamp is not None:
+            record["camera_timestamp"] = float(camera_timestamp)
+        if sync_delta_ms is not None:
+            record["sync_delta_ms"] = float(sync_delta_ms)
+        if sync_ok is not None:
+            record["sync_ok"] = bool(sync_ok)
         if action_qpos is not None:
-            self._action_qpos.append(action_qpos.copy())
+            record["action_qpos"] = np.asarray(action_qpos, dtype=np.float64).tolist()
         if action_gripper is not None:
-            self._action_gripper.append(action_gripper)
+            record["action_gripper"] = float(action_gripper)
         if eef_pos is not None:
-            self._eef_pos.append(eef_pos.copy())
+            record["eef_pos"] = np.asarray(eef_pos, dtype=np.float64).tolist()
+        self._frame_records.append(record)
 
     @property
     def num_frames(self) -> int:
-        return len(self._timestamps)
+        return len(self._frame_records)
 
     def save(self, task_name: str = "", instruction: str = "") -> str:
-        """Write buffered data to an HDF5 file.
-
-        Args:
-            task_name: Human-readable task name for this episode.
-            instruction: Natural-language instruction for this episode.
-
-        Returns:
-            Path to the saved file.
-        """
+        """Write buffered data to an episode directory."""
         if self.num_frames == 0:
             raise ValueError("No frames to save")
 
         episode_idx = self._next_episode_index()
-        filename = self.output_dir / f"episode_{episode_idx:04d}.hdf5"
+        episode_dir = self.output_dir / f"episode_{episode_idx:04d}"
+        episode_dir.mkdir(parents=True, exist_ok=False)
 
-        qpos = np.array(self._qpos, dtype=np.float64)       # (N, 6)
-        qvel = np.array(self._qvel, dtype=np.float64)       # (N, 6)
-        gripper = np.array(self._gripper, dtype=np.float64).reshape(-1, 1)  # (N, 1)
-        color = np.array(self._color, dtype=np.uint8)        # (N, H, W, 3)
-        depth = np.array(self._depth, dtype=np.uint16)       # (N, H, W)
-        timestamps = np.array(self._timestamps, dtype=np.float64)  # (N,)
+        video_path = episode_dir / "camera.mp4"
+        metadata_path = episode_dir / "metadata.json"
 
-        with h5py.File(filename, "w") as f:
-            # observations
-            obs = f.create_group("observations")
-            obs.create_dataset("qpos", data=qpos)
-            obs.create_dataset("qvel", data=qvel)
-            obs.create_dataset("gripper", data=gripper)
+        self._write_video(video_path)
 
-            # EEF position (if recorded)
-            if self._eef_pos:
-                eef_pos_arr = np.array(self._eef_pos, dtype=np.float64)  # (N, 3)
-                obs.create_dataset("eef_pos", data=eef_pos_arr)
-
-            imgs = obs.create_group("images")
-            imgs.create_dataset("color", data=color, compression="gzip",
-                                compression_opts=4)
-            imgs.create_dataset("depth", data=depth, compression="gzip",
-                                compression_opts=4)
-
-            # action — separate if master-slave, otherwise same as observation
-            act = f.create_group("action")
-            if self._action_qpos:
-                act_qpos = np.array(self._action_qpos, dtype=np.float64)
-                act.create_dataset("qpos", data=act_qpos)
-            else:
-                act.create_dataset("qpos", data=qpos)
-            if self._action_gripper:
-                act_grip = np.array(self._action_gripper, dtype=np.float64).reshape(-1, 1)
-                act.create_dataset("gripper", data=act_grip)
-            else:
-                act.create_dataset("gripper", data=gripper)
-
-            # timestamps
-            f.create_dataset("timestamps", data=timestamps)
-
-            # world frame calibration
-            if self._world_config is not None:
-                T_bw = np.asarray(self._world_config["T_base_from_world"], dtype=np.float64)
-                T_wb = np.asarray(self._world_config["T_world_from_base"], dtype=np.float64)
-                f.create_dataset("T_base_from_world", data=T_bw)
-                f.create_dataset("T_world_from_base", data=T_wb)
-                f.attrs["world_frame_calibrated"] = True
-            else:
-                f.attrs["world_frame_calibrated"] = False
-
-            # metadata
-            f.attrs["num_frames"] = len(timestamps)
-            f.attrs["fps"] = 30
-            duration = timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0
-            f.attrs["duration_s"] = duration
-            f.attrs["task_name"] = task_name
-            f.attrs["instruction"] = instruction
+        timestamps = [record["timestamp"] for record in self._frame_records]
+        duration = timestamps[-1] - timestamps[0] if len(timestamps) > 1 else 0.0
+        sync_deltas = [
+            record["sync_delta_ms"]
+            for record in self._frame_records
+            if "sync_delta_ms" in record
+        ]
+        sync_ok_count = sum(
+            1 for record in self._frame_records if record.get("sync_ok") is True
+        )
+        metadata = {
+            "format": "robodata_episode_v1",
+            "task_name": task_name,
+            "instruction": instruction,
+            "num_frames": self.num_frames,
+            "duration_s": float(duration),
+            "video_file": video_path.name,
+            "world_frame_calibrated": self._world_config is not None,
+            "world_config": self._to_jsonable(self._world_config),
+            "sync_summary": {
+                "frames_with_sync_check": len(sync_deltas),
+                "sync_ok_frames": sync_ok_count,
+                "sync_ok_ratio": (
+                    float(sync_ok_count / len(sync_deltas)) if sync_deltas else None
+                ),
+                "max_sync_delta_ms": max(sync_deltas) if sync_deltas else None,
+                "mean_sync_delta_ms": (
+                    float(np.mean(sync_deltas)) if sync_deltas else None
+                ),
+            },
+            "frames": self._frame_records,
+        }
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
         n = self.num_frames
         self.reset()
-        print(f"[HDF5Writer] Saved {n} frames -> {filename}")
-        return str(filename)
+        print(f"[EpisodeWriter] Saved {n} frames -> {episode_dir}")
+        return str(episode_dir)
+
+    def _write_video(self, video_path: Path) -> None:
+        first_frame = self._frames[0]
+        height, width = first_frame.shape[:2]
+        fps = self._infer_fps()
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height),
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"Failed to open video writer: {video_path}")
+
+        try:
+            for frame in self._frames:
+                if frame.shape[:2] != (height, width):
+                    frame = cv2.resize(frame, (width, height))
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        finally:
+            writer.release()
+
+    def _infer_fps(self) -> float:
+        if self.num_frames < 2:
+            return 30.0
+        timestamps = np.asarray(
+            [
+                record.get("camera_timestamp", record.get("timestamp"))
+                for record in self._frame_records
+            ],
+            dtype=np.float64,
+        )
+        dt = np.diff(timestamps)
+        dt = dt[dt > 1e-6]
+        if dt.size == 0:
+            return 30.0
+        return float(np.clip(1.0 / np.mean(dt), 1.0, 240.0))
 
     def _next_episode_index(self) -> int:
         """Find the next available episode index."""
-        existing = sorted(self.output_dir.glob("episode_*.hdf5"))
+        existing = sorted(
+            path for path in self.output_dir.glob("episode_*") if path.is_dir()
+        )
         if not existing:
             return 0
-        last = existing[-1].stem  # e.g. "episode_0003"
+        last = existing[-1].name
         return int(last.split("_")[1]) + 1
+
+    def _to_jsonable(self, value):
+        """Recursively convert numpy values to JSON-serializable Python types."""
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {key: self._to_jsonable(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._to_jsonable(item) for item in value]
+        return value

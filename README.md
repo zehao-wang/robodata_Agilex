@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.11-blue?logo=python&logoColor=white)
 
-Data collection and arm control system for the Agilex PIPER dual-arm setup (teaching + operation arms) via CAN bus. Captures joint angles, gripper width, and D435i RGBD video in HDF5 format compatible with ACT / Diffusion Policy frameworks.
+Data collection and arm control system for the Agilex PIPER dual-arm setup (teaching + operation arms) via CAN bus. Captures joint angles, gripper width, and camera video as per-episode folders with MP4 video plus aligned JSON metadata.
 
 ## Hardware
 
@@ -96,32 +96,15 @@ Interactive drag control with IK solving. When world frame is loaded, the sideba
 
 ## Data Format
 
-Each episode is saved as an HDF5 file:
+Each episode is saved as a folder:
 
 ```
-episode_0000.hdf5
-├── observations/
-│   ├── qpos          (N, 6)           float64   # Joint angles (rad)
-│   ├── qvel          (N, 6)           float64   # Joint velocities
-│   ├── gripper       (N, 1)           float64   # Gripper width (m)
-│   ├── eef_pos       (N, 3)           float64   # EEF position (m), world or base frame
-│   └── images/
-│       ├── color     (N, 480, 640, 3) uint8     # RGB
-│       └── depth     (N, 480, 640)    uint16    # Depth (mm)
-├── action/
-│   ├── qpos          (N, 6)           float64
-│   └── gripper       (N, 1)           float64
-├── timestamps        (N,)             float64   # Unix timestamps
-├── T_base_from_world (4, 4)           float64   # World→base transform (if calibrated)
-├── T_world_from_base (4, 4)           float64   # Base→world transform (if calibrated)
-└── attrs:
-    ├── num_frames              int
-    ├── fps                     int
-    ├── duration_s              float
-    ├── task_name               str
-    ├── instruction             str
-    └── world_frame_calibrated  bool
+episode_0000/
+├── camera.mp4                  # RGB video
+└── metadata.json               # One metadata entry per video frame
 ```
+
+`metadata.json` includes episode-level metadata plus a `frames` array. Each item in `frames` corresponds 1:1 with the MP4 frames and records values such as `frame_index`, `timestamp`, `qpos`, `qvel`, `gripper`, and `eef_pos`.
 
 ## Troubleshooting
 

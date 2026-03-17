@@ -9,8 +9,14 @@ import numpy as np
 class RealsenseCamera:
     """Captures aligned color and depth frames from a D435i."""
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
-                 streams: str = "rgbd"):
+    def __init__(
+        self,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+        streams: str = "rgbd",
+        device_serial: str | None = None,
+    ):
         """
         Args:
             streams: "rgb" for color only, "depth" for depth only,
@@ -20,6 +26,7 @@ class RealsenseCamera:
         self.height = height
         self.fps = fps
         self.streams = streams
+        self.device_serial = device_serial
 
         self._pipeline = None
         self._align = None
@@ -36,19 +43,28 @@ class RealsenseCamera:
         self._rs = rs
 
         # Verify device is reachable
-        ctx = rs.context()
-        devs = ctx.query_devices()
+        devs = self.list_devices()
         print(f"[RealsenseCamera] Found {len(devs)} device(s)")
         if len(devs) == 0:
             raise RuntimeError("No RealSense device found")
-        usb_type = devs[0].get_info(rs.camera_info.usb_type_descriptor)
-        print(f"  - {devs[0].get_info(rs.camera_info.name)}, USB: {usb_type}")
+
+        selected = None
+        if self.device_serial is not None:
+            selected = next((dev for dev in devs if dev["serial"] == self.device_serial), None)
+            if selected is None:
+                raise RuntimeError(f"Requested RealSense serial not found: {self.device_serial}")
+        else:
+            selected = devs[0]
+
+        print(f"  - {selected['name']} ({selected['serial']}), USB: {selected['usb_type']}")
 
         need_color = self.streams in ("rgb", "rgbd")
         need_depth = self.streams in ("depth", "rgbd")
 
         self._pipeline = rs.pipeline()
         config = rs.config()
+        if selected["serial"]:
+            config.enable_device(selected["serial"])
         if need_color:
             config.enable_stream(rs.stream.color, self.width, self.height,
                                  rs.format.rgb8, self.fps)
@@ -63,7 +79,10 @@ class RealsenseCamera:
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
-        print(f"[RealsenseCamera] Started ({self.width}x{self.height} @ {self.fps}fps, streams={self.streams})")
+        print(
+            f"[RealsenseCamera] Started ({self.width}x{self.height} @ {self.fps}fps, "
+            f"streams={self.streams}, serial={selected['serial']})"
+        )
 
     def stop(self):
         """Stop capture and release resources."""
@@ -85,6 +104,12 @@ class RealsenseCamera:
         """
         with self._lock:
             return self._color_frame.copy(), self._depth_frame.copy(), self._timestamp
+
+    def capture_sync(self, arm_state_provider) -> tuple[np.ndarray, np.ndarray, float, object]:
+        """Return the latest RealSense frame and an arm sample taken immediately after."""
+        color, depth, timestamp = self.get_frames()
+        arm_state = arm_state_provider()
+        return color, depth, timestamp, arm_state
 
     def _capture_loop(self):
         """Background loop: wait for frames and store them."""
@@ -124,3 +149,23 @@ class RealsenseCamera:
                 print(f"[RealsenseCamera] frame {frame_count}"
                       + (f", color {color_arr.shape} mean={color_arr.mean():.1f}" if color_arr is not None else "")
                       + (f", depth {depth_arr.shape}" if depth_arr is not None else ""))
+
+    @staticmethod
+    def list_devices() -> list[dict[str, str]]:
+        """Return connected RealSense devices."""
+        try:
+            import pyrealsense2 as rs
+        except ImportError:
+            return []
+
+        ctx = rs.context()
+        devices = []
+        for dev in ctx.query_devices():
+            devices.append(
+                {
+                    "name": dev.get_info(rs.camera_info.name),
+                    "serial": dev.get_info(rs.camera_info.serial_number),
+                    "usb_type": dev.get_info(rs.camera_info.usb_type_descriptor),
+                }
+            )
+        return devices
