@@ -12,6 +12,7 @@ import json
 import math
 import os
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -108,6 +109,8 @@ class ViserDataCollectorApp:
         self._camera_id_to_label = {source.source_id: source.label for source in self._camera_sources}
         self._last_camera_selection = self._get_current_camera_label()
         self._last_sync_info = self._empty_sync_info()
+        self._updating_zed_controls = False
+        self._latest_color_frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
         # Replay state
         self._replaying = False
         self._replay_stop_requested = False
@@ -170,10 +173,35 @@ class ViserDataCollectorApp:
             self._camera_resolution_md = server.gui.add_markdown(
                 "**Resolution:** ---"
             )
+            self._zed_brightness_slider = server.gui.add_slider(
+                "ZED Brightness", min=0, max=8, step=1, initial_value=4, visible=False
+            )
+            self._zed_contrast_slider = server.gui.add_slider(
+                "ZED Contrast", min=0, max=8, step=1, initial_value=4, visible=False
+            )
+            self._zed_hue_slider = server.gui.add_slider(
+                "ZED Hue", min=0, max=8, step=1, initial_value=0, visible=False
+            )
+            self._zed_saturation_slider = server.gui.add_slider(
+                "ZED Saturation", min=0, max=8, step=1, initial_value=4, visible=False
+            )
+            self._zed_sharpness_slider = server.gui.add_slider(
+                "ZED Sharpness", min=0, max=8, step=1, initial_value=6, visible=False
+            )
+            self._zed_auto_wb_checkbox = server.gui.add_checkbox(
+                "ZED Auto WB", initial_value=True, visible=False
+            )
+            self._zed_wb_slider = server.gui.add_slider(
+                "ZED WB Temp", min=2800, max=6500, step=100, initial_value=4600, visible=False
+            )
+            self._zed_led_checkbox = server.gui.add_checkbox(
+                "ZED LED", initial_value=False, visible=False
+            )
             self._color_handle = server.gui.add_image(
                 np.zeros((self._frame_h, self._frame_w, 3), dtype=np.uint8),
                 label="Color",
             )
+            self._save_screenshot_btn = server.gui.add_button("Save Screenshot")
             if self._has_depth:
                 self._depth_handle = server.gui.add_image(
                     np.zeros((self._frame_h, self._frame_w, 3), dtype=np.uint8),
@@ -196,6 +224,8 @@ class ViserDataCollectorApp:
             self._status_md = server.gui.add_markdown("**Status:** IDLE")
 
         self._record_btn.on_click(self._on_record_click)
+        self._save_screenshot_btn.on_click(self._on_save_screenshot_click)
+        self._bind_zed_control_events()
 
         # Replay folder
         with server.gui.add_folder("Replay"):
@@ -291,6 +321,7 @@ class ViserDataCollectorApp:
                 # --- Live mode ---
                 self._sync_camera_selection()
                 self._sync_opencv_zed_mode()
+                self._sync_zed_controls()
                 if self._camera is not None and hasattr(self._camera, "get_camera_info"):
                     self._writer.set_camera_info(self._camera.get_camera_info())
                 if self._camera is not None:
@@ -338,6 +369,7 @@ class ViserDataCollectorApp:
             self._urdf_vis.update_cfg(cfg)
 
             # Update camera display
+            self._latest_color_frame = color.copy()
             self._color_handle.image = color
             self._camera_resolution_md.content = self._format_camera_resolution(
                 color=color,
@@ -401,6 +433,23 @@ class ViserDataCollectorApp:
             self._start_recording()
         else:
             self._stop_recording()
+
+    def _on_save_screenshot_click(self, _event):
+        frame = self._latest_color_frame
+        if frame is None or frame.size == 0:
+            self._status_md.content = "**Status:** No camera frame available"
+            return
+
+        screenshot_dir = Path(self._output_dir) / "screenshots"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        screenshot_path = screenshot_dir / f"camera_{timestamp}.png"
+        ok = cv2.imwrite(str(screenshot_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        if not ok:
+            self._status_md.content = "**Status:** Failed to save screenshot"
+            return
+        self._status_md.content = f"**Status:** Screenshot saved: {screenshot_path}"
+        print(f">> Screenshot saved: {screenshot_path}")
 
     def _start_recording(self):
         self._task_name = self._task_input.value
@@ -627,6 +676,7 @@ class ViserDataCollectorApp:
         self._last_camera_selection = current_label
         self._camera_status_md.content = self._camera_status_text(current_label)
         self._camera_backend_md.content = self._camera_backend_text(current_label)
+        self._update_zed_control_visibility(current_label)
 
     def _camera_backend_text(self, selection_label: str) -> str:
         if selection_label == "(none)":
@@ -654,3 +704,71 @@ class ViserDataCollectorApp:
             self._camera.set_opencv_zed_mode(enabled)
             current_label = self._get_current_camera_label()
             self._camera_backend_md.content = self._camera_backend_text(current_label)
+
+    def _bind_zed_control_events(self):
+        self._zed_brightness_slider.on_update(lambda _: self._apply_zed_control("brightness", self._zed_brightness_slider.value))
+        self._zed_contrast_slider.on_update(lambda _: self._apply_zed_control("contrast", self._zed_contrast_slider.value))
+        self._zed_hue_slider.on_update(lambda _: self._apply_zed_control("hue", self._zed_hue_slider.value))
+        self._zed_saturation_slider.on_update(lambda _: self._apply_zed_control("saturation", self._zed_saturation_slider.value))
+        self._zed_sharpness_slider.on_update(lambda _: self._apply_zed_control("sharpness", self._zed_sharpness_slider.value))
+        self._zed_auto_wb_checkbox.on_update(lambda _: self._apply_zed_control("auto_white_balance", self._zed_auto_wb_checkbox.value))
+        self._zed_wb_slider.on_update(lambda _: self._apply_zed_control("white_balance_temperature", self._zed_wb_slider.value))
+        self._zed_led_checkbox.on_update(lambda _: self._apply_zed_control("led", self._zed_led_checkbox.value))
+
+    def _apply_zed_control(self, name: str, value) -> None:
+        if self._updating_zed_controls:
+            return
+        if self._camera is None or not hasattr(self._camera, "set_control"):
+            return
+        current_label = self._get_current_camera_label()
+        source_id = self._camera_label_to_id.get(current_label)
+        if source_id is None or not source_id.startswith("zed:"):
+            return
+        try:
+            self._camera.set_control(name, value)
+        except Exception as exc:
+            self._camera_status_md.content = f"**Camera:** {exc}"
+            return
+        self._sync_zed_controls()
+
+    def _sync_zed_controls(self) -> None:
+        current_label = self._get_current_camera_label()
+        source_id = self._camera_label_to_id.get(current_label)
+        is_zed = source_id is not None and source_id.startswith("zed:")
+        if not is_zed or self._camera is None or not hasattr(self._camera, "get_control_state"):
+            return
+        try:
+            control_state = self._camera.get_control_state()
+        except Exception as exc:
+            self._camera_status_md.content = f"**Camera:** {exc}"
+            return
+        if control_state is None:
+            return
+        self._updating_zed_controls = True
+        try:
+            self._zed_brightness_slider.value = int(control_state["brightness"])
+            self._zed_contrast_slider.value = int(control_state["contrast"])
+            self._zed_hue_slider.value = int(control_state["hue"])
+            self._zed_saturation_slider.value = int(control_state["saturation"])
+            self._zed_sharpness_slider.value = int(control_state["sharpness"])
+            self._zed_auto_wb_checkbox.value = bool(control_state["auto_white_balance"])
+            self._zed_wb_slider.value = int(control_state["white_balance_temperature"])
+            self._zed_wb_slider.disabled = bool(control_state["auto_white_balance"])
+            self._zed_led_checkbox.value = bool(control_state["led"])
+        finally:
+            self._updating_zed_controls = False
+
+    def _update_zed_control_visibility(self, selection_label: str) -> None:
+        source_id = self._camera_label_to_id.get(selection_label)
+        is_zed = source_id is not None and source_id.startswith("zed:")
+        for handle in (
+            self._zed_brightness_slider,
+            self._zed_contrast_slider,
+            self._zed_hue_slider,
+            self._zed_saturation_slider,
+            self._zed_sharpness_slider,
+            self._zed_auto_wb_checkbox,
+            self._zed_wb_slider,
+            self._zed_led_checkbox,
+        ):
+            handle.visible = bool(is_zed)

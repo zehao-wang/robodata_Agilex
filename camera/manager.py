@@ -201,6 +201,17 @@ class CameraManager:
             return None
         return self._active_camera.get_camera_info()
 
+    def get_control_state(self) -> dict | None:
+        if self._active_camera is None or not hasattr(self._active_camera, "get_control_state"):
+            return None
+        return self._active_camera.get_control_state()
+
+    def set_control(self, name: str, value) -> bool:
+        if self._active_camera is None or not hasattr(self._active_camera, "set_control"):
+            return False
+        self._active_camera.set_control(name, value)
+        return True
+
     def capture_sync(self, arm_state_provider):
         if self._active_camera is None:
             color = np.zeros((self._height, self._width, 3), dtype=np.uint8)

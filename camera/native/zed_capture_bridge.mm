@@ -47,6 +47,20 @@ struct ZedCameraHandle {
     bool has_frame = false;
 };
 
+enum ZedUInt16ControlId {
+    ZED_CTRL_BRIGHTNESS = 1,
+    ZED_CTRL_CONTRAST = 2,
+    ZED_CTRL_HUE = 3,
+    ZED_CTRL_SATURATION = 4,
+    ZED_CTRL_SHARPNESS = 5,
+    ZED_CTRL_WHITE_BALANCE_TEMPERATURE = 6,
+};
+
+enum ZedBoolControlId {
+    ZED_CTRL_AUTO_WHITE_BALANCE = 101,
+    ZED_CTRL_LED = 102,
+};
+
 double now_seconds() {
     using clock = std::chrono::system_clock;
     const auto now = clock::now().time_since_epoch();
@@ -293,6 +307,170 @@ int zed_camera_wait_for_frame(
         pump_main_run_loop(0.005);
     }
     return 0;
+}
+
+int zed_camera_get_control_u16(
+    ZedCameraHandle* handle,
+    int control_id,
+    std::uint16_t* value,
+    char* error_message,
+    std::size_t error_size
+) {
+    clear_error(error_message, error_size);
+    if (handle == nullptr || value == nullptr) {
+        return write_error("Invalid ZED control read request", error_message, error_size);
+    }
+    if (!handle->is_open) {
+        return write_error("ZED camera is not open", error_message, error_size);
+    }
+
+    try {
+        switch (control_id) {
+            case ZED_CTRL_BRIGHTNESS:
+                *value = handle->capture.getBrightness();
+                break;
+            case ZED_CTRL_CONTRAST:
+                *value = handle->capture.getContrast();
+                break;
+            case ZED_CTRL_HUE:
+                *value = handle->capture.getHue();
+                break;
+            case ZED_CTRL_SATURATION:
+                *value = handle->capture.getSaturation();
+                break;
+            case ZED_CTRL_SHARPNESS:
+                *value = handle->capture.getSharpness();
+                break;
+            case ZED_CTRL_WHITE_BALANCE_TEMPERATURE:
+                *value = handle->capture.getWhiteBalanceTemperature();
+                break;
+            default:
+                return write_error("Unsupported ZED uint16 control", error_message, error_size);
+        }
+        return 1;
+    } catch (const std::exception& exc) {
+        return write_error(exc.what(), error_message, error_size);
+    } catch (...) {
+        return write_error("Unknown error while reading ZED uint16 control", error_message, error_size);
+    }
+}
+
+int zed_camera_set_control_u16(
+    ZedCameraHandle* handle,
+    int control_id,
+    std::uint16_t value,
+    char* error_message,
+    std::size_t error_size
+) {
+    clear_error(error_message, error_size);
+    if (handle == nullptr) {
+        return write_error("Invalid ZED control write request", error_message, error_size);
+    }
+    if (!handle->is_open) {
+        return write_error("ZED camera is not open", error_message, error_size);
+    }
+
+    try {
+        switch (control_id) {
+            case ZED_CTRL_BRIGHTNESS:
+                handle->capture.setBrightness(value);
+                break;
+            case ZED_CTRL_CONTRAST:
+                handle->capture.setContrast(value);
+                break;
+            case ZED_CTRL_HUE:
+                handle->capture.setHue(value);
+                break;
+            case ZED_CTRL_SATURATION:
+                handle->capture.setSaturation(value);
+                break;
+            case ZED_CTRL_SHARPNESS:
+                handle->capture.setSharpness(value);
+                break;
+            case ZED_CTRL_WHITE_BALANCE_TEMPERATURE:
+                handle->capture.setWhiteBalanceTemperature(value);
+                break;
+            default:
+                return write_error("Unsupported ZED uint16 control", error_message, error_size);
+        }
+        return 1;
+    } catch (const std::exception& exc) {
+        return write_error(exc.what(), error_message, error_size);
+    } catch (...) {
+        return write_error("Unknown error while writing ZED uint16 control", error_message, error_size);
+    }
+}
+
+int zed_camera_get_control_bool(
+    ZedCameraHandle* handle,
+    int control_id,
+    bool* value,
+    char* error_message,
+    std::size_t error_size
+) {
+    clear_error(error_message, error_size);
+    if (handle == nullptr || value == nullptr) {
+        return write_error("Invalid ZED bool control read request", error_message, error_size);
+    }
+    if (!handle->is_open) {
+        return write_error("ZED camera is not open", error_message, error_size);
+    }
+
+    try {
+        switch (control_id) {
+            case ZED_CTRL_AUTO_WHITE_BALANCE:
+                *value = handle->capture.getAutoWhiteBalanceTemperature();
+                break;
+            case ZED_CTRL_LED:
+                *value = handle->capture.isLEDOn();
+                break;
+            default:
+                return write_error("Unsupported ZED bool control", error_message, error_size);
+        }
+        return 1;
+    } catch (const std::exception& exc) {
+        return write_error(exc.what(), error_message, error_size);
+    } catch (...) {
+        return write_error("Unknown error while reading ZED bool control", error_message, error_size);
+    }
+}
+
+int zed_camera_set_control_bool(
+    ZedCameraHandle* handle,
+    int control_id,
+    bool value,
+    char* error_message,
+    std::size_t error_size
+) {
+    clear_error(error_message, error_size);
+    if (handle == nullptr) {
+        return write_error("Invalid ZED bool control write request", error_message, error_size);
+    }
+    if (!handle->is_open) {
+        return write_error("ZED camera is not open", error_message, error_size);
+    }
+
+    try {
+        switch (control_id) {
+            case ZED_CTRL_AUTO_WHITE_BALANCE:
+                handle->capture.setAutoWhiteBalanceTemperature(value);
+                break;
+            case ZED_CTRL_LED:
+                if (value) {
+                    handle->capture.turnOnLED();
+                } else {
+                    handle->capture.turnOffLED();
+                }
+                break;
+            default:
+                return write_error("Unsupported ZED bool control", error_message, error_size);
+        }
+        return 1;
+    } catch (const std::exception& exc) {
+        return write_error(exc.what(), error_message, error_size);
+    } catch (...) {
+        return write_error("Unknown error while writing ZED bool control", error_message, error_size);
+    }
 }
 
 }  // extern "C"
