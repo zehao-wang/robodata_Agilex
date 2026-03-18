@@ -37,10 +37,6 @@ class OpenCVCamera:
             capture.release()
             raise RuntimeError(f"Failed to open camera index {self.camera_index}")
 
-        requested_width = 3840 if self.zed_mode else self.width
-        requested_height = 1080 if self.zed_mode else self.height
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, requested_width)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_height)
         capture.set(cv2.CAP_PROP_FPS, self.fps)
 
         ok, frame, timestamp = self._grab_and_retrieve(capture)
@@ -104,7 +100,8 @@ class OpenCVCamera:
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         if self.zed_mode:
-            frame = frame[:1080, :1920]
+            half_width = frame.shape[1] // 2
+            frame = frame[:, :half_width]
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def _validate_raw_resolution(self, frame: np.ndarray) -> None:
@@ -112,8 +109,8 @@ class OpenCVCamera:
             return
 
         raw_h, raw_w = frame.shape[:2]
-        if raw_w < 3840 or raw_h < 1080:
+        if raw_w < 2:
             raise RuntimeError(
-                "ZED Mode requires raw camera output at least 3840x1080, "
+                "ZED Mode requires a side-by-side image wide enough to split in half, "
                 f"but got {raw_w}x{raw_h}"
             )

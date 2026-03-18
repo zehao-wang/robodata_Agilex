@@ -12,6 +12,7 @@ import numpy as np
 from camera.manager import CameraSource
 from camera.opencv_camera import OpenCVCamera
 from camera.realsense import RealsenseCamera
+from camera.zed_camera import ZedCamera
 from robot.arm_reader import ArmReader, ArmState
 
 
@@ -251,6 +252,13 @@ def _build_camera(source: CameraSource, *, width: int, height: int, fps: int, st
             width=width,
             height=height,
             fps=fps,
+            streams="rgb",
+        )
+    if source.backend == "zed":
+        return ZedCamera(
+            width=1920,
+            height=1080,
+            fps=30,
             streams="rgb",
         )
     raise ValueError(f"Unsupported camera backend: {source.backend}")

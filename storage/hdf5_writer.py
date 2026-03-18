@@ -14,6 +14,7 @@ class HDF5Writer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._world_config = None
+        self._camera_info = None
         self.reset()
 
     def reset(self):
@@ -24,6 +25,10 @@ class HDF5Writer:
     def set_world_config(self, world_config: dict | None) -> None:
         """Set world frame config to be written with each episode."""
         self._world_config = world_config
+
+    def set_camera_info(self, camera_info: dict | None) -> None:
+        """Set camera metadata to be written with each episode."""
+        self._camera_info = camera_info
 
     def add_frame(
         self,
@@ -105,6 +110,7 @@ class HDF5Writer:
             "num_frames": self.num_frames,
             "duration_s": float(duration),
             "video_file": video_path.name,
+            "camera_info": self._to_jsonable(self._camera_info),
             "world_frame_calibrated": self._world_config is not None,
             "world_config": self._to_jsonable(self._world_config),
             "sync_summary": {

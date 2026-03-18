@@ -35,6 +35,9 @@ def main():
                         help="Camera frame height")
     parser.add_argument("--fps", type=int, default=30,
                         help="Target capture frame rate")
+    parser.add_argument("--camera-backend", type=str, default="auto",
+                        choices=["auto", "opencv", "realsense", "zed"],
+                        help="Preferred camera backend")
     parser.add_argument("--max-sync-dt-ms", type=float, default=50.0,
                         help="Maximum allowed arm/camera timestamp delta in milliseconds")
     parser.add_argument("--streams", type=str, default="rgb",
@@ -55,6 +58,11 @@ def main():
         args.no_arm = True
         args.no_camera = True
         print("[Demo Mode] Running without hardware - GUI and visualization only")
+    elif args.camera_backend == "zed":
+        args.width = 1920
+        args.height = 1080
+        args.fps = 30
+        args.streams = "rgb"
 
     # Import here to delay loading until args are parsed
     from storage.hdf5_writer import HDF5Writer
@@ -86,20 +94,52 @@ def main():
             height=args.height,
             fps=args.fps,
             streams=args.streams,
+            preferred_backend=args.camera_backend,
         )
         camera_sources = camera.sources
         print(f"[Camera] Discovered {len(camera_sources)} candidate source(s)")
         for source in camera_sources:
             print(f"  - {source.label}")
-        active_source_id = camera.start_first_available()
+        active_source_id = None
+        if args.camera_backend != "auto":
+            preferred_source = next(
+                (source for source in camera_sources if source.backend == args.camera_backend),
+                None,
+            )
+            if preferred_source is None:
+                print(f"[Camera] Preferred backend '{args.camera_backend}' not found")
+            else:
+                if camera.select_camera(preferred_source.source_id):
+                    active_source_id = preferred_source.source_id
+                else:
+                    print(f"[Camera] Failed to start preferred backend '{args.camera_backend}'")
+        if active_source_id is None:
+            active_source_id = camera.start_first_available()
         if active_source_id is None:
             print("[Camera] No available camera could be started, using blank frames")
         else:
             active_label = camera.source_id_to_label()[active_source_id]
             print(f"[Camera] Auto-selected: {active_label}")
+            camera_info = camera.get_camera_info()
+            if camera_info is not None:
+                writer_info = {
+                    key: value
+                    for key, value in camera_info.items()
+                }
+                print(f"[Camera] Params: {writer_info}")
+                resolution = camera_info.get("resolution")
+                if isinstance(resolution, dict):
+                    args.width = int(resolution.get("width", args.width))
+                    args.height = int(resolution.get("height", args.height))
+            else:
+                writer_info = None
+        if active_source_id is None:
+            writer_info = None
 
     # Create writer
     writer = HDF5Writer(output_dir=args.output_dir)
+    if not args.no_camera:
+        writer.set_camera_info(writer_info)
 
     # Load world frame config
     from utils.world_frame import load_world_config

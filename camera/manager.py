@@ -9,6 +9,7 @@ import numpy as np
 
 from camera.opencv_camera import OpenCVCamera
 from camera.realsense import RealsenseCamera
+from camera.zed_camera import ZedCamera
 
 
 @dataclass(frozen=True)
@@ -21,42 +22,60 @@ class CameraSource:
     camera_index: int | None = None
 
 
-def discover_camera_sources(max_opencv_index: int = 10) -> list[CameraSource]:
+def discover_camera_sources(
+    max_opencv_index: int = 10,
+    preferred_backend: str = "auto",
+) -> list[CameraSource]:
     """Probe connected cameras and return selectable sources."""
     sources: list[CameraSource] = []
 
-    for dev in RealsenseCamera.list_devices():
-        serial = dev["serial"]
-        usb_type = dev.get("usb_type", "unknown")
-        label = f"RealSense {dev['name']} ({serial}, USB {usb_type})"
-        sources.append(
-            CameraSource(
-                source_id=f"realsense:{serial}",
-                label=label,
-                backend="realsense",
-                has_depth=True,
-                serial=serial,
+    if preferred_backend in ("auto", "zed"):
+        for dev in ZedCamera.list_devices():
+            label = f"{dev['name']} (HD1080 left @ {dev['fps']}fps)"
+            sources.append(
+                CameraSource(
+                    source_id="zed:left",
+                    label=label,
+                    backend="zed",
+                    has_depth=False,
+                    serial=dev.get("serial"),
+                )
             )
-        )
 
-    for camera_index in range(max_opencv_index):
-        capture = cv2.VideoCapture(camera_index)
-        if not capture.isOpened():
-            capture.release()
-            continue
-        ok, _ = capture.read()
-        capture.release()
-        if not ok:
-            continue
-        sources.append(
-            CameraSource(
-                source_id=f"opencv:{camera_index}",
-                label=f"System Camera {camera_index}",
-                backend="opencv",
-                has_depth=False,
-                camera_index=camera_index,
+    if preferred_backend in ("auto", "realsense"):
+        for dev in RealsenseCamera.list_devices():
+            serial = dev["serial"]
+            usb_type = dev.get("usb_type", "unknown")
+            label = f"RealSense {dev['name']} ({serial}, USB {usb_type})"
+            sources.append(
+                CameraSource(
+                    source_id=f"realsense:{serial}",
+                    label=label,
+                    backend="realsense",
+                    has_depth=True,
+                    serial=serial,
+                )
             )
-        )
+
+    if preferred_backend in ("auto", "opencv"):
+        for camera_index in range(max_opencv_index):
+            capture = cv2.VideoCapture(camera_index)
+            if not capture.isOpened():
+                capture.release()
+                continue
+            ok, _ = capture.read()
+            capture.release()
+            if not ok:
+                continue
+            sources.append(
+                CameraSource(
+                    source_id=f"opencv:{camera_index}",
+                    label=f"System Camera {camera_index}",
+                    backend="opencv",
+                    has_depth=False,
+                    camera_index=camera_index,
+                )
+            )
 
     return sources
 
@@ -71,15 +90,20 @@ class CameraManager:
         fps: int = 30,
         streams: str = "rgb",
         max_opencv_index: int = 10,
+        preferred_backend: str = "auto",
     ):
         self._width = width
         self._height = height
         self._fps = fps
         self._streams = streams
         self._max_opencv_index = max_opencv_index
+        self._preferred_backend = preferred_backend
         self._opencv_zed_mode = True
 
-        self._sources = discover_camera_sources(max_opencv_index=max_opencv_index)
+        self._sources = discover_camera_sources(
+            max_opencv_index=max_opencv_index,
+            preferred_backend=preferred_backend,
+        )
         self._active_camera = None
         self._active_source_id: str | None = None
         self._last_error: str | None = None
@@ -172,6 +196,11 @@ class CameraManager:
             return color, depth, 0.0
         return self._active_camera.get_frames()
 
+    def get_camera_info(self) -> dict | None:
+        if self._active_camera is None or not hasattr(self._active_camera, "get_camera_info"):
+            return None
+        return self._active_camera.get_camera_info()
+
     def capture_sync(self, arm_state_provider):
         if self._active_camera is None:
             color = np.zeros((self._height, self._width, 3), dtype=np.uint8)
@@ -214,5 +243,12 @@ class CameraManager:
                 fps=self._fps,
                 streams="rgb",
                 zed_mode=self._opencv_zed_mode,
+            )
+        if source.backend == "zed":
+            return ZedCamera(
+                width=1920,
+                height=1080,
+                fps=30,
+                streams="rgb",
             )
         raise ValueError(f"Unsupported camera backend: {source.backend}")

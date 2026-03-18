@@ -291,6 +291,8 @@ class ViserDataCollectorApp:
                 # --- Live mode ---
                 self._sync_camera_selection()
                 self._sync_opencv_zed_mode()
+                if self._camera is not None and hasattr(self._camera, "get_camera_info"):
+                    self._writer.set_camera_info(self._camera.get_camera_info())
                 if self._camera is not None:
                     color, depth, camera_timestamp, display_state = self._camera.capture_sync(
                         self._get_current_arm_state
@@ -638,6 +640,8 @@ class ViserDataCollectorApp:
             backend = "OpenCV (ZED Mode)" if self._zed_mode_checkbox.value else "OpenCV"
         elif source_id.startswith("realsense:"):
             backend = "RealSense"
+        elif source_id.startswith("zed:"):
+            backend = "ZED Open Capture"
         else:
             backend = "unknown"
         return f"**Module:** {backend}"
