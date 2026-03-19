@@ -7,6 +7,7 @@ and provides joint-order mapping between CAN protocol and URDF.
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 # Path to assets relative to this file
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "piper_description"
@@ -123,13 +124,33 @@ def fingertip_center_from_urdf_cfg(urdf, cfg: np.ndarray) -> np.ndarray:
     return 0.5 * (p_l + p_r)
 
 
+def eef_pose_from_urdf_cfg(urdf, cfg: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute EEF pose in base frame from URDF cfg.
+
+    Returns:
+        position_base_m: (3,)
+        rotation_base: (3,3)
+        wxyz_base: (4,) quaternion [w, x, y, z]
+    """
+    cfg = np.asarray(cfg, dtype=np.float64)
+    assert cfg.shape == (8,), f"Expected (8,), got {cfg.shape}"
+    cfg_dict = {name: float(v) for name, v in zip(urdf.actuated_joint_names, cfg)}
+    urdf.update_cfg(cfg_dict)
+
+    T_eef = urdf.get_transform(PIPER_EEF_LINK_NAME)
+    position_base_m = np.asarray(T_eef[:3, 3], dtype=np.float64)
+    rotation_base = np.asarray(T_eef[:3, :3], dtype=np.float64)
+    xyzw = Rotation.from_matrix(rotation_base).as_quat()
+    wxyz_base = np.array([xyzw[3], xyzw[0], xyzw[1], xyzw[2]], dtype=np.float64)
+    return position_base_m, rotation_base, wxyz_base
+
+
 def euler_deg_to_wxyz(rx: float, ry: float, rz: float) -> np.ndarray:
     """Convert Euler angles (degrees, XYZ extrinsic) to quaternion [w, x, y, z].
 
     This matches the PIPER SDK convention where rx/ry/rz are extrinsic XYZ Euler
     angles in degrees.
     """
-    from scipy.spatial.transform import Rotation
     r = Rotation.from_euler("XYZ", [rx, ry, rz], degrees=True)
     # scipy returns [x,y,z,w]; we need [w,x,y,z]
     xyzw = r.as_quat()
@@ -142,7 +163,6 @@ def wxyz_to_euler_deg(wxyz: np.ndarray) -> tuple[float, float, float]:
     Returns:
         (rx, ry, rz) in degrees.
     """
-    from scipy.spatial.transform import Rotation
     wxyz = np.asarray(wxyz, dtype=np.float64)
     xyzw = np.array([wxyz[1], wxyz[2], wxyz[3], wxyz[0]])
     r = Rotation.from_quat(xyzw)

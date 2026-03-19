@@ -215,7 +215,7 @@ def pose_world_to_base(
     return pos_base, wxyz_base
 
 
-def add_world_frame_visual(server, world_config: dict) -> None:
+def add_world_frame_visual(server, world_config: dict, *, show_axes: bool = True) -> None:
     """Add calibration rectangle visualization to a viser scene.
 
     Draws blue border lines and a semi-transparent blue filled rectangle
@@ -248,6 +248,9 @@ def add_world_frame_visual(server, world_config: dict) -> None:
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     mesh.visual.face_colors = [66, 133, 244, 51]  # ~20% opacity
     server.scene.add_mesh_trimesh("/world_frame/surface", mesh)
+
+    if not show_axes:
+        return
 
     # Origin axes (small, 5cm)
     T = world_config["T_base_from_world"]

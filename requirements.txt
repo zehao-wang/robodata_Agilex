@@ -7,6 +7,7 @@ pyrealsense2-macosx; platform_system == "Darwin"
 h5py
 numpy
 opencv-python
+pupil-apriltags
 
 # JAX and pyroki dependencies
 jax>=0.4.0

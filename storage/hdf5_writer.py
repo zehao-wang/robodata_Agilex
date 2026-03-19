@@ -45,6 +45,7 @@ class HDF5Writer:
         action_qpos: np.ndarray | None = None,
         action_gripper: float | None = None,
         eef_pos: np.ndarray | None = None,
+        tblock_pose_world: dict | None = None,
     ):
         """Buffer a single frame of RGB video and aligned arm metadata."""
         frame_index = len(self._frame_records)
@@ -73,6 +74,8 @@ class HDF5Writer:
             record["action_gripper"] = float(action_gripper)
         if eef_pos is not None:
             record["eef_pos"] = np.asarray(eef_pos, dtype=np.float64).tolist()
+        if tblock_pose_world is not None:
+            record["tblock_pose_world"] = self._to_jsonable(tblock_pose_world)
         self._frame_records.append(record)
 
     @property
