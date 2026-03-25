@@ -25,5 +25,6 @@ viser>=0.2.0
 scipy
 matplotlib
 
-# Local pyroki (editable install)
+# Local packages (editable installs)
 -e ./pyroki
+-e ./packages/piper_sdk

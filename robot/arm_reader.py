@@ -196,10 +196,25 @@ class ArmReader:
 
     def _read_loop(self):
         """Background loop: read CAN frames and update state."""
+        frame_count = 0
+        last_print = time.time()
         while self._running:
             msg = self._bus.recv(timeout=0.05)
             if msg is None:
+                if time.time() - last_print > 3.0:
+                    print(f"[ArmReader] WARNING: no CAN frames received in last 3s "
+                          f"(total received: {frame_count})")
+                    last_print = time.time()
                 continue
+            frame_count += 1
+            known = msg.arbitration_id in self._can_config.joint_ids \
+                    or msg.arbitration_id == self._can_config.gripper_id
+            if frame_count <= 5 or (frame_count % 500 == 0):
+                tag = "MATCH" if known else "other"
+                print(f"[ArmReader] frame #{frame_count}  "
+                      f"id=0x{msg.arbitration_id:03X} [{tag}]  "
+                      f"data={bytes(msg.data).hex(' ')}")
+            last_print = time.time()
             self._parse_frame(msg)
 
     def _parse_frame(self, msg):
@@ -230,3 +245,97 @@ class ArmReader:
                 raw_gripper = struct.unpack(">i", msg.data[0:4])[0]
                 self._state.gripper = raw_gripper * RAW_TO_METER
                 self._state.timestamp = now
+
+
+# ---------------------------------------------------------------------------
+# piper_sdk-based reader (initializes arm + reads via SDK, same interface)
+# ---------------------------------------------------------------------------
+
+class PiperArmReader:
+    """Reads arm state via piper_sdk (C_PiperInterface_V2).
+
+    Calls ConnectPort() to initialize the arm (which triggers CAN feedback),
+    then polls GetArmJointMsgs() / GetArmGripperMsgs() in a background thread.
+    Drop-in replacement for ArmReader — same start/stop/get_state interface.
+    """
+
+    def __init__(self, can_interface: str = "socketcan", can_channel: str = "can0",
+                 bitrate: int = 1_000_000):
+        self.can_interface = can_interface
+        self.can_channel = can_channel
+        self.bitrate = bitrate
+
+        self._piper = None
+        self._state = ArmState()
+        self._prev_qpos = np.zeros(6, dtype=np.float64)
+        self._prev_time = 0.0
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread = None
+
+    def start(self):
+        from robot.arm_controller import create_piper
+        print(f"[PiperArmReader] Connecting via {self.can_interface}...")
+        self._piper = create_piper(self.can_interface, self.can_channel, self.bitrate)
+        print("[PiperArmReader] Connected. Starting read loop.")
+        self._running = True
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._piper is not None:
+            try:
+                self._piper.DisconnectPort()
+            except Exception:
+                pass
+            self._piper = None
+        print("[PiperArmReader] Stopped")
+
+    def get_state(self) -> ArmState:
+        with self._lock:
+            return ArmState(
+                qpos=self._state.qpos.copy(),
+                qvel=self._state.qvel.copy(),
+                gripper=self._state.gripper,
+                timestamp=self._state.timestamp,
+            )
+
+    def _read_loop(self):
+        deg_to_rad = np.pi / 180.0
+        frame = 0
+        while self._running:
+            now = time.time()
+            try:
+                j = self._piper.GetArmJointMsgs()
+                js = j.joint_state
+                raw = [js.joint_1, js.joint_2, js.joint_3,
+                       js.joint_4, js.joint_5, js.joint_6]
+                qpos = np.array(raw, dtype=np.float64) * 0.001 * deg_to_rad
+
+                g = self._piper.GetArmGripperMsgs()
+                gripper_m = g.gripper_state.grippers_angle * 1e-6
+
+                if frame < 10 or frame % 200 == 0:
+                    print(f"[PiperArmReader] frame={frame} "
+                          f"raw_joints={raw} "
+                          f"gripper_raw={g.gripper_state.grippers_angle} "
+                          f"qpos_deg={[round(v*180/np.pi,2) for v in qpos]}")
+
+                with self._lock:
+                    if self._prev_time > 0:
+                        dt = now - self._prev_time
+                        if dt > 0:
+                            self._state.qvel = (qpos - self._prev_qpos) / dt
+                    self._state.qpos = qpos
+                    self._state.gripper = gripper_m
+                    self._state.timestamp = now
+                    self._prev_qpos = qpos.copy()
+                    self._prev_time = now
+            except Exception as e:
+                print(f"[PiperArmReader] read error: {e}")
+            frame += 1
+            time.sleep(0.005)  # ~200 Hz poll

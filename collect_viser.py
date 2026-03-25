@@ -20,7 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description="Viser-based PIPER data collection")
     parser.add_argument("--output_dir", type=str, default="./data/records",
                         help="Directory to save episode HDF5 files")
-    parser.add_argument("--can-interface", type=str, default="gs_usb",
+    parser.add_argument("--can-interface", type=str, default="socketcan",
                         choices=["gs_usb", "socketcan"],
                         help="CAN bus interface type")
     parser.add_argument("--can-channel", type=str, default="can0",
@@ -38,8 +38,14 @@ def main():
     parser.add_argument("--streams", type=str, default="rgb",
                         choices=["rgb", "depth", "rgbd"],
                         help="Camera streams: rgb, depth, or rgbd (default: rgb)")
+    parser.add_argument("--camera", type=str, default="realsense",
+                        choices=["realsense", "zed2"],
+                        help="Camera backend: realsense (D435i) or zed2 (default: realsense)")
     parser.add_argument("--no-camera", action="store_true",
                         help="Run without camera (dummy black frames)")
+    parser.add_argument("--arm-mode", type=str, default="slave",
+                        choices=["slave", "master"],
+                        help="CAN ID set: 'slave' (0x2A5-0x2A8, default) or 'master' (0x155-0x159)")
     parser.add_argument("--no-arm", action="store_true",
                         help="Run without arm (dummy zero state)")
     parser.add_argument("--demo", action="store_true",
@@ -63,8 +69,8 @@ def main():
         arm_reader = None
         print("[Arm] Skipped (--no-arm mode)")
     else:
-        from robot.arm_reader import ArmReader
-        arm_reader = ArmReader(
+        from robot.arm_reader import PiperArmReader
+        arm_reader = PiperArmReader(
             can_interface=args.can_interface,
             can_channel=args.can_channel,
             bitrate=args.bitrate,
@@ -75,6 +81,15 @@ def main():
     if args.no_camera:
         camera = None
         print("[Camera] Skipped (--no-camera mode)")
+    elif args.camera == "zed2":
+        from camera.zed2 import ZED2Camera
+        camera = ZED2Camera(
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            streams=args.streams,
+        )
+        camera.start()
     else:
         from camera.realsense import RealsenseCamera
         camera = RealsenseCamera(

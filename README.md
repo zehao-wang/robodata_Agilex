@@ -123,6 +123,57 @@ episode_0000.hdf5
     └── world_frame_calibrated  bool
 ```
 
+## Q&A
+
+### `gs_usb` vs `socketcan` — what is the difference?
+
+Both refer to the same physical CAN adapter (candleLight / gs_usb firmware), but they use different software paths to talk to it.
+
+| | `gs_usb` | `socketcan` |
+|---|---|---|
+| **Who drives the hardware** | Python `gs_usb` library via libusb (userspace) | Linux kernel `gs_usb` module |
+| **Network interface** | No `can0` created | Creates `can0` (or `can1`, …) |
+| **Setup required** | Plug and use | `bash setup_can.sh` once per boot |
+| **Stability on Linux** | Prone to segfault on Ctrl-C / shutdown | Stable — kernel handles cleanup |
+| **macOS** | Works (only option) | Not available |
+
+**On Linux, always use `socketcan`** (the default). Run `setup_can.sh` after each boot or adapter replug — it loads the kernel module, binds it to the adapter, and brings `can0` up at 1 Mbps.
+
+```bash
+bash setup_can.sh          # once per boot
+python collect_viser.py    # socketcan is the default
+python control_arm.py      # same
+```
+
+`gs_usb` mode is kept for macOS only. On Linux the kernel driver owns the USB device, so the Python libusb path conflicts with it and causes send failures or segfaults.
+
+---
+
+### ZED camera: `numpy.dtype size changed` / segfault
+
+`pyzed` is compiled against numpy 1.x and is ABI-incompatible with numpy 2.x. The project runs a separate bridge process (`camera/zed_bridge.py`) under a numpy 1.x Python so the main process stays on numpy 2.x (required by JAX).
+
+**One-time setup:**
+```bash
+conda create -n zed_bridge python=3.10 numpy=1.26 -y
+conda activate zed_bridge
+python /usr/local/zed/get_python_api.py   # installs pyzed into this env
+conda deactivate
+```
+
+**Run with ZED:**
+```bash
+ZED_BRIDGE_PYTHON=$(conda run -n zed_bridge which python) \
+    python collect_viser.py --camera zed2 --streams rgbd
+```
+
+Or export it permanently in your shell profile:
+```bash
+export ZED_BRIDGE_PYTHON=$(conda run -n zed_bridge which python)
+```
+
+---
+
 ## Troubleshooting
 
 ### RealSense 相机帧超时 (`Frame didn't arrive within 5000`)

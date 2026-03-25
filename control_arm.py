@@ -24,7 +24,7 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description="Interactive PIPER arm control")
     parser.add_argument("--interface", choices=["gs_usb", "socketcan"],
-                        default="gs_usb", help="CAN interface (default: gs_usb)")
+                        default="socketcan", help="CAN interface (default: socketcan)")
     parser.add_argument("--channel", default="can0",
                         help="CAN channel for socketcan (default: can0)")
     parser.add_argument("--bitrate", type=int, default=1_000_000,
