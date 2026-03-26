@@ -22,3 +22,7 @@ data/
 # Keep the URDF but you may want to download meshes separately
 # assets/piper_description/meshes/*.STL
 # assets/piper_description/meshes/*.dae       
+
+outputs/
+
+*.egg-info
