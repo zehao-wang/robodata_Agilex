@@ -29,10 +29,12 @@ def main():
     parser.add_argument("--shm-color", required=True)
     parser.add_argument("--shm-depth", default=None)
     parser.add_argument("--shm-meta",  required=True)
-    parser.add_argument("--fps",     type=int, default=30)
-    parser.add_argument("--width",   type=int, default=1280)
-    parser.add_argument("--height",  type=int, default=720)
-    parser.add_argument("--streams", default="rgbd", choices=["rgb", "depth", "rgbd"])
+    parser.add_argument("--fps",         type=int, default=30)
+    parser.add_argument("--width",       type=int, default=1280)
+    parser.add_argument("--height",      type=int, default=720)
+    parser.add_argument("--streams",     default="rgbd", choices=["rgb", "depth", "rgbd"])
+    parser.add_argument("--params-file", default=None,
+                        help="If given, write camera intrinsics JSON to this path.")
     args = parser.parse_args()
 
     shm_color = SharedMemory(name=args.shm_color)
@@ -85,8 +87,50 @@ def main():
         shm_meta.buf[16] = 255
         sys.exit(1)
 
-    cam_res = zed.get_camera_information().camera_configuration.resolution
+    cam_info = zed.get_camera_information()
+    cam_res = cam_info.camera_configuration.resolution
     w, h = cam_res.width, cam_res.height
+
+    # Optionally write camera intrinsics/calibration to a JSON file
+    if args.params_file:
+        import json
+        calib = cam_info.camera_configuration.calibration_parameters
+        left  = calib.left_cam
+        right = calib.right_cam
+        params = {
+            "type":             "zed2i",
+            "serial_number":    cam_info.serial_number,
+            "model":            str(cam_info.camera_model),
+            "firmware_version": cam_info.camera_configuration.firmware_version,
+            "width":            w,
+            "height":           h,
+            "fps":              args.fps,
+            "left": {
+                "fx":               float(left.fx),
+                "fy":               float(left.fy),
+                "cx":               float(left.cx),
+                "cy":               float(left.cy),
+                "h_fov_deg":        float(left.h_fov),
+                "v_fov_deg":        float(left.v_fov),
+                "d_fov_deg":        float(left.d_fov),
+                "focal_length_mm":  float(left.focal_length_metric),
+                "distortion_coeffs": left.disto.tolist(),
+            },
+            "right": {
+                "fx":               float(right.fx),
+                "fy":               float(right.fy),
+                "cx":               float(right.cx),
+                "cy":               float(right.cy),
+                "h_fov_deg":        float(right.h_fov),
+                "v_fov_deg":        float(right.v_fov),
+                "d_fov_deg":        float(right.d_fov),
+                "focal_length_mm":  float(right.focal_length_metric),
+                "distortion_coeffs": right.disto.tolist(),
+            },
+            "baseline_mm": float(calib.get_camera_baseline()),
+        }
+        with open(args.params_file, "w") as _f:
+            json.dump(params, _f, indent=2)
 
     # Write static width/height + initial status once
     shm_meta.buf[0:4]  = np.int32(w).tobytes()

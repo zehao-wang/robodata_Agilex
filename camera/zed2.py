@@ -16,10 +16,12 @@ ZED2i supported resolutions (width x height @ fps):
   672x376   @ 15, 30, 100
 """
 
+import json
 import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from multiprocessing.shared_memory import SharedMemory
@@ -110,6 +112,7 @@ class ZED2Camera:
         self._depth_arr: np.ndarray | None = None
         self.width: int = 0
         self.height: int = 0
+        self._params_file: str | None = None
 
     def __str__(self) -> str:
         return f"ZED2Camera({self.config.width}x{self.config.height}@{self.fps}fps)"
@@ -136,14 +139,17 @@ class ZED2Camera:
         self._shm_meta = SharedMemory(create=True, size=_META_BYTES)
         self._shm_meta.buf[16] = 0  # status = starting
 
+        self._params_file = tempfile.mktemp(suffix="_zed2_params.json")
+
         cmd = [
             self._bridge_python, _BRIDGE_SCRIPT,
-            "--shm-color", self._shm_color.name,
-            "--shm-meta",  self._shm_meta.name,
-            "--fps",       str(self.config.fps),
-            "--width",     str(self.config.width),
-            "--height",    str(self.config.height),
-            "--streams",   self._streams,
+            "--shm-color",   self._shm_color.name,
+            "--shm-meta",    self._shm_meta.name,
+            "--fps",         str(self.config.fps),
+            "--width",       str(self.config.width),
+            "--height",      str(self.config.height),
+            "--streams",     self._streams,
+            "--params-file", self._params_file,
         ]
         if need_depth:
             cmd += ["--shm-depth", self._shm_depth.name]
@@ -212,7 +218,24 @@ class ZED2Camera:
                     pass
         self._shm_color = self._shm_depth = self._shm_meta = None
 
+        if self._params_file and os.path.exists(self._params_file):
+            try:
+                os.unlink(self._params_file)
+            except Exception:
+                pass
+        self._params_file = None
+
         logger.info(f"{self} disconnected.")
+
+    def get_camera_params(self) -> dict:
+        """Return camera intrinsics/calibration written by the bridge on startup.
+
+        Returns an empty dict if the params file is not available.
+        """
+        if self._params_file and os.path.exists(self._params_file):
+            with open(self._params_file) as f:
+                return json.load(f)
+        return {}
 
     def read(self) -> NDArray[Any]:
         """Return the next new color frame (blocking).
