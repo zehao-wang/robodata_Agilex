@@ -38,9 +38,9 @@ REALSENSE_SERIAL="${REALSENSE_SERIAL:-332322070769}"
 export HF_LEROBOT_HOME="${DATASET_ROOT}"
 export ZED_BRIDGE_PYTHON="${ZED_BRIDGE_PYTHON:-/home/zwa0839/miniconda3/envs/zed_bridge/bin/python3.10}"
 
-DISPLAY_ARGS=""
+EXTRA_ARGS=""
 if [ "${NO_DISPLAY:-0}" = "1" ]; then
-    DISPLAY_ARGS="--no-display"
+    EXTRA_ARGS="${EXTRA_ARGS} --no-display"
 fi
 
 python "${SCRIPT_DIR}/eval_piper.py" \
@@ -53,4 +53,4 @@ python "${SCRIPT_DIR}/eval_piper.py" \
     --speed="${SPEED}" \
     --channel="${CHANNEL}" \
     --realsense-serial="${REALSENSE_SERIAL}" \
-    ${DISPLAY_ARGS}
+    ${EXTRA_ARGS}

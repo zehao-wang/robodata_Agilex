@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -64,7 +65,18 @@ _RAD_TO_RAW = 1.0 / _RAW_TO_RAD      # radians  → 0.001 deg
 _RAW_TO_METER = 1e-6
 _METER_TO_RAW = 1.0 / _RAW_TO_METER  # metres   → 0.001 mm
 
-_GRIPPER_EFFORT = 1000   # 0.001 N/m, range 0–5000
+# AgileX PIPER hardware gripper range (piper_sdk piper_param_manager.py)
+_GRIPPER_MAX_M   = 0.068                               # 68 mm
+_GRIPPER_MAX_RAW = int(_GRIPPER_MAX_M * _METER_TO_RAW)  # 68_000
+
+_GRIPPER_EFFORT = 2000   # 0.001 N/m — hardware-reported max for firm grasp
+
+# When measured gripper effort (0.001 N/m) reaches this value, lock the gripper
+# width until the next open command.  200 = 0.2 N/m.
+_GRIPPER_CONTACT_EFFORT = 200
+
+# Sticky hold state: -1 = not holding; >= 0 = locked hold angle (raw 0.001 mm).
+_gripper_hold_angle: int = -1
 
 # Dataset keys used as observations
 _OBS_STATE_KEY = "observation.state"
@@ -114,17 +126,57 @@ def _log_status(step: int, max_steps: int) -> None:
 # Arm helpers
 # ---------------------------------------------------------------------------
 
-def _action_to_raw(action: np.ndarray):
-    """Convert 7-dim dataset action (rad×6 + m×1) → piper SDK raw ints."""
+def _read_binarized_gripper(dataset_root: Path) -> bool:
+    """Read binarized_gripper flag from meta/info.json (False if absent)."""
+    info_path = dataset_root / "meta" / "info.json"
+    if not info_path.exists():
+        return False
+    with open(info_path) as f:
+        return json.load(f).get("binarized_gripper", False)
+
+
+def _action_to_raw(action: np.ndarray, binarized_gripper: bool):
+    """Convert 7-dim policy action (rad×6 + gripper×1) → piper SDK raw ints.
+
+    binarized_gripper=True  — gripper output is 0.0/1.0; scale to hardware range.
+        0.0 → 0 raw  (closed)
+        1.0 → _GRIPPER_MAX_RAW = 70_000 raw  (fully open, 70 mm)
+
+    binarized_gripper=False — gripper output is a continuous width in metres.
+    """
     joints  = [int(action[i] * _RAD_TO_RAW) for i in range(6)]
-    gripper = int(action[6] * _METER_TO_RAW)
+    g       = float(action[6])
+    gripper = int(g * _GRIPPER_MAX_RAW) if binarized_gripper else int(g * _METER_TO_RAW)
     return joints, gripper
 
 
 def _send_action(piper, joints: list[int], gripper: int, speed: int) -> None:
+    global _gripper_hold_angle
+
     piper.MotionCtrl_2(0x01, 0x01, speed, 0x00)   # joint control mode
     piper.JointCtrl(*joints)
-    piper.GripperCtrl(gripper, _GRIPPER_EFFORT, 0x01, 0x00)
+
+    # Gripper compliance: on open command, clear the hold and execute normally.
+    # On close command, once effort >= _GRIPPER_CONTACT_EFFORT, lock the current
+    # width and keep it until the next open command.
+    is_close = gripper < _GRIPPER_MAX_RAW // 2
+
+    if not is_close:
+        _gripper_hold_angle = -1
+        target_angle = gripper
+    elif _gripper_hold_angle >= 0:
+        target_angle = _gripper_hold_angle
+    else:
+        fb = piper.GetArmGripperMsgs()
+        if abs(fb.gripper_state.grippers_effort) >= _GRIPPER_CONTACT_EFFORT:
+            _gripper_hold_angle = fb.gripper_state.grippers_angle
+            target_angle = _gripper_hold_angle
+        else:
+            target_angle = gripper
+
+    # status_code=0x03: Enable + clear error so a stall fault never permanently
+    # disables the gripper across cycles.
+    piper.GripperCtrl(target_angle, _GRIPPER_EFFORT, 0x03, 0x00)
 
 
 def _connect_and_enable_arm(channel: str) -> object:
@@ -180,6 +232,8 @@ def run_eval(
     realsense_serial: str,
     bridge_python: str,
 ) -> None:
+    binarized_gripper = _read_binarized_gripper(dataset_root)
+
     # --- Load dataset for features (episodes=[0] → minimal I/O) ---
     dataset = LeRobotDataset(repo_id, root=dataset_root, episodes=[0])
     ds_features = dataset.features
@@ -275,7 +329,7 @@ def run_eval(
 
             # action_tensor may be [1, action_dim] or [action_dim] depending on postprocessor
             action_np = action_tensor.squeeze().cpu().numpy()  # → (action_dim,)
-            joints, gripper = _action_to_raw(action_np)
+            joints, gripper = _action_to_raw(action_np, binarized_gripper)
             _send_action(piper, joints, gripper, speed)
 
             step += 1

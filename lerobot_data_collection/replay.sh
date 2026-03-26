@@ -7,11 +7,11 @@
 #   EPISODE=3 PHYSICAL_ARM=1 bash lerobot_data_collection/replay.sh # replay on arm
 #
 # Env vars:
-#   EPISODE       Episode index (default: 0)
-#   PHYSICAL_ARM  Set to 1 to also command the physical arm
-#   SPEED         Arm motion speed 1-100 (default: 50)
-#   REPO_ID       Dataset repo id
-#   DATASET_ROOT  Parent directory of the dataset (default: /mnt/disk2)
+#   EPISODE            Episode index (default: 0)
+#   PHYSICAL_ARM       Set to 1 to also command the physical arm
+#   SPEED              Arm motion speed 1-100 (default: 50)
+#   REPO_ID            Dataset repo id
+#   DATASET_ROOT       Parent directory of the dataset (default: /mnt/disk2)
 #
 # Prerequisites for physical arm:
 #   bash setup_can.sh

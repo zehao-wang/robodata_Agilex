@@ -9,9 +9,11 @@
 #   bash lerobot_data_collection/record.sh
 #
 # Key env vars:
-#   HF_USER           HuggingFace username
-#   ZED_BRIDGE_PYTHON Path to Python with pyzed + numpy<2.0
-#   COUNTDOWN_S       Seconds to count down before recording starts (default 3)
+#   HF_USER             HuggingFace username
+#   ZED_BRIDGE_PYTHON   Path to Python with pyzed + numpy<2.0
+#   COUNTDOWN_S         Seconds to count down before recording starts (default 3)
+#   BINARIZED_GRIPPER   Set to 1 to binarize gripper action after recording (default 0)
+#   GRIPPER_THRESHOLD   Open/close boundary (metres, default 0.020 = 20 mm)
 #
 # Episode controls:
 #   ENTER       — arm and start recording

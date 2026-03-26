@@ -13,6 +13,10 @@
 #   LR            Learning rate              (default: 1e-4)
 #   WANDB         Set to 1 to enable W&B     (default: 0)
 #   NUM_WORKERS   DataLoader workers         (default: 16)
+#
+# Gripper action (binary vs continuous) is determined by how the dataset was
+# recorded (BINARIZED_GRIPPER flag in record.sh). Training reads whatever is
+# in the dataset — no special handling needed here.
 
 set -e
 

@@ -19,8 +19,10 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -248,6 +250,86 @@ def _recording_start_notification(episode_num: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Gripper binarization (applied post-finalize when BINARIZED_GRIPPER=1)
+# ---------------------------------------------------------------------------
+
+# AgileX PIPER hardware spec (piper_sdk/piper_param/piper_param_manager.py)
+#   PIPER_PARAM["gripper_range"] = [0.0, 0.07]
+_PIPER_GRIPPER_MAX_M = 0.068   # 68 mm
+
+
+def _binarize_dataset_gripper(dataset_root: Path, threshold: float) -> None:
+    """Replace continuous gripper action with 0.0 (closed) / 1.0 (open) in-place.
+
+    open  if gripper >= _PIPER_GRIPPER_MAX_M - threshold
+    closed otherwise
+    """
+    import numpy as np
+    import pandas as pd
+
+    boundary      = _PIPER_GRIPPER_MAX_M - threshold
+    data_dir      = dataset_root / "data"
+    stats_path    = dataset_root / "meta" / "stats.json"
+    parquet_files = sorted(data_dir.rglob("*.parquet"))
+
+    if not parquet_files:
+        logger.warning("[binarize] No parquet files found — skipping.")
+        return
+
+    all_bin = []
+    for path in parquet_files:
+        df      = pd.read_parquet(path)
+        actions = np.stack(df["action"].values).astype(np.float32)
+        actions[:, -1] = np.where(actions[:, -1] >= boundary,
+                                  np.float32(1.0), np.float32(0.0))
+        df["action"] = list(actions)
+        df.to_parquet(path, index=False)
+        all_bin.append(actions[:, -1])
+
+    all_bin = np.concatenate(all_bin)
+    n_open  = int((all_bin == 1.0).sum())
+    logger.info(f"[binarize] {len(all_bin)} steps: {n_open} OPEN, "
+                f"{len(all_bin)-n_open} CLOSED  (boundary={boundary*1000:.0f} mm)")
+
+    if stats_path.exists():
+        with open(stats_path) as f:
+            stats = json.load(f)
+        bak = stats_path.with_suffix(".json.bak")
+        if not bak.exists():
+            shutil.copy(stats_path, bak)
+        p = float((all_bin == 1.0).mean())
+        gripper_stats = {
+            "min": 0.0, "max": 1.0,
+            "mean": p, "std": float(np.sqrt(p * (1.0 - p))),
+            "q01": float(np.percentile(all_bin, 1)),
+            "q10": float(np.percentile(all_bin, 10)),
+            "q50": float(np.percentile(all_bin, 50)),
+            "q90": float(np.percentile(all_bin, 90)),
+            "q99": float(np.percentile(all_bin, 99)),
+        }
+        for key, val in gripper_stats.items():
+            if isinstance(stats["action"][key], list):
+                stats["action"][key][-1] = val
+            else:
+                stats["action"][key] = val
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
+
+
+def _stamp_info_json(dataset_root: Path, binarized_gripper: bool) -> None:
+    """Write binarized_gripper flag into meta/info.json."""
+    info_path = dataset_root / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    with open(info_path) as f:
+        info = json.load(f)
+    info["binarized_gripper"] = binarized_gripper
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=2)
+    logger.info(f"[binarize] info.json → binarized_gripper={binarized_gripper}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -274,6 +356,16 @@ def main():
     parser.add_argument("--no-display", dest="display",
         action="store_false", default=True)
     parser.add_argument("--vcodec", default="libsvtav1")
+    parser.add_argument(
+        "--binarized-gripper", action="store_true",
+        default=os.environ.get("BINARIZED_GRIPPER", "0") == "1",
+        help="After recording, binarize the gripper action: 1.0 if open, 0.0 if closed.",
+    )
+    parser.add_argument(
+        "--gripper-threshold", type=float,
+        default=float(os.environ.get("GRIPPER_THRESHOLD", "0.020")),
+        help="Gripper is OPEN if width >= (70 mm - threshold). Default: 0.020 (20 mm).",
+    )
     args = parser.parse_args()
 
     init_logging()
@@ -426,6 +518,10 @@ def main():
             listener.stop()
 
         dataset.finalize()
+
+        if args.binarized_gripper:
+            _binarize_dataset_gripper(dataset_root, args.gripper_threshold)
+        _stamp_info_json(dataset_root, binarized_gripper=args.binarized_gripper)
 
         if robot.is_connected:
             robot.disconnect()
