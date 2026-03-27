@@ -46,12 +46,12 @@ import torch  # noqa: E402
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: E402
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.datasets.utils import build_dataset_frame  # noqa: E402
-from lerobot.policies.pretrained import PreTrainedPolicy  # noqa: E402
+from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy  # noqa: E402
 from lerobot.policies.factory import make_pre_post_processors  # noqa: E402
 from lerobot.processor import make_default_processors  # noqa: E402
 from lerobot.robots import make_robot_from_config  # noqa: E402
 from lerobot.utils.control_utils import init_keyboard_listener, is_headless, predict_action  # noqa: E402
-from lerobot.utils.torch_utils import get_safe_torch_device  # noqa: E402
+from lerobot.utils.utils import get_safe_torch_device  # noqa: E402
 from lerobot.utils.utils import init_logging  # noqa: E402
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data  # noqa: E402
 from lerobot_camera_zed2i import ZED2iCameraConfig  # noqa: E402
@@ -199,20 +199,22 @@ def _connect_and_enable_arm(channel: str) -> object:
 
 
 def _safe_stop_arm(piper) -> None:
-    """Stop motion and disable arm without crashing."""
+    """Hold current pose and disconnect.
+
+    Switches to standby mode (ctrl_mode=0x00) so the arm's brakes hold
+    position without active CAN torque, and the physical teaching button
+    works again immediately after the program exits.
+    Does NOT call DisablePiper() — the arm stays energised and does not drop.
+    """
     try:
-        piper.MotionCtrl_2(0x01, 0x01, 0, 0x00)  # speed = 0 → hold
-    except Exception:
-        pass
-    try:
-        piper.DisablePiper()
+        piper.MotionCtrl_2(0x00, 0x00, 0, 0x00)  # standby — releases CAN control
     except Exception:
         pass
     try:
         piper.DisconnectPort()
     except Exception:
         pass
-    print("[eval] Arm stopped and disconnected.")
+    print("[eval] Arm in standby and disconnected.")
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +241,13 @@ def run_eval(
     ds_features = dataset.features
 
     # --- Load policy ---
-    print(f"[eval] Loading policy from {checkpoint} ...")
-    policy = PreTrainedPolicy.from_pretrained(str(checkpoint))
+    # lerobot saves weights under <checkpoint>/pretrained_model/; fall back to
+    # the checkpoint dir itself for older layouts.
+    pretrained_path = checkpoint / "pretrained_model"
+    if not pretrained_path.exists():
+        pretrained_path = checkpoint
+    print(f"[eval] Loading policy from {pretrained_path} ...")
+    policy = DiffusionPolicy.from_pretrained(str(pretrained_path))
     device  = get_safe_torch_device(policy.config.device)
     policy  = policy.to(device)
     policy.eval()
@@ -258,7 +265,7 @@ def run_eval(
     # Build policy-side pre/post processors from the (now-patched) config.
     preprocessor, postprocessor = make_pre_post_processors(
         policy.config,
-        pretrained_path=str(checkpoint),
+        pretrained_path=str(pretrained_path),
     )
 
     # --- Hardware ---
@@ -287,6 +294,8 @@ def run_eval(
 
     # --- Rerun ---
     if display:
+        # Increase memory limit so images are not evicted during replay.
+        os.environ.setdefault("LEROBOT_RERUN_MEMORY_LIMIT", "50%")
         init_rerun(session_name="piper_eval")
         _setup_blueprint()
 
@@ -338,10 +347,30 @@ def run_eval(
                 import rerun as rr
                 rr.set_time("step", sequence=step)
                 _log_status(step, max_steps)
-                # Build named action dict for rerun (same key format as obs_processed)
+
+                # Log camera images directly — log_rerun_data uses static=True which
+                # prevents per-step recording and breaks playback.
+                for cam_key, rr_path in (
+                    ("realsense", "observation.realsense"),
+                    ("zed2i",     "observation.zed2i"),
+                ):
+                    img = obs_processed.get(cam_key)
+                    if img is not None:
+                        if isinstance(img, torch.Tensor):
+                            img = img.cpu().numpy()
+                        if img.ndim == 3 and img.shape[0] in (1, 3, 4):
+                            img = np.transpose(img, (1, 2, 0))
+                        if img.dtype != np.uint8:
+                            img = (img * 255).clip(0, 255).astype(np.uint8)
+                        rr.log(rr_path, rr.Image(img))
+
+                # Log scalars via log_rerun_data (scalars don't have the static issue)
+                _cam_keys = {"realsense", "zed2i"}
+                non_image_obs = {k: v for k, v in obs_processed.items()
+                                 if k not in _cam_keys}
                 joint_names = [f"joint_{i+1}.pos" for i in range(6)] + ["gripper.pos"]
                 action_named = {name: float(action_np[i]) for i, name in enumerate(joint_names)}
-                log_rerun_data(observation=obs_processed, action=action_named)
+                log_rerun_data(observation=non_image_obs, action=action_named)
 
             elapsed = time.perf_counter() - t_start
             wait = dt - elapsed
@@ -431,4 +460,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
