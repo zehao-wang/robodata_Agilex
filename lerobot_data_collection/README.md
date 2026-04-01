@@ -1,4 +1,5 @@
 # LeRobot Data Collection for AgileX PIPER
+![Python](https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white)
 
 Records datasets in [lerobot 0.5.0](https://huggingface.co/docs/lerobot) format using a custom recording CLI (`record_piper.py`). Three plugin packages register the PIPER arms and ZED 2i camera with lerobot's discovery system.
 
