@@ -14,30 +14,78 @@ Usage:
 """
 
 import argparse
+from pathlib import Path
+
+from camera_ipc import DEFAULT_POINTGREY_SHM_PREFIX, DEFAULT_POINTGREY_SOCKET_PATH
 
 
 def main():
     parser = argparse.ArgumentParser(description="Viser-based PIPER data collection")
     parser.add_argument("--output_dir", type=str, default="./data/records",
                         help="Directory to save episode HDF5 files")
-    parser.add_argument("--can-interface", type=str, default="gs_usb",
+    parser.add_argument("--can-interface", type=str, default="socketcan",
                         choices=["gs_usb", "socketcan"],
                         help="CAN bus interface type")
     parser.add_argument("--can-channel", type=str, default="can0",
                         help="CAN channel (for socketcan mode)")
     parser.add_argument("--bitrate", type=int, default=1_000_000,
                         help="CAN bus bitrate")
+    parser.add_argument("--arm-backend", type=str, default="http",
+                        choices=["http", "sdk", "can"],
+                        help=(
+                            "Robot feedback backend. 'http' polls the PushT "
+                            "service API; 'sdk' uses local piper_sdk; 'can' "
+                            "uses the raw python-can decoder."
+                        ))
+    parser.add_argument("--arm-server", type=str, default="http://127.0.0.1:8012",
+                        help="PushT service API URL for --arm-backend http")
+    parser.add_argument("--arm-http-connect", dest="arm_http_connect", action="store_true",
+                        default=True,
+                        help=(
+                            "Ask the PushT service client to connect the arm at startup "
+                            "(default for --arm-backend http)."
+                        ))
+    parser.add_argument("--no-arm-http-connect", dest="arm_http_connect", action="store_false",
+                        help=(
+                            "Do not connect the PushT service arm at startup; only read "
+                            "from an already connected service."
+                        ))
+    parser.add_argument("--arm-poll-hz", type=float, default=30.0,
+                        help="Arm feedback polling rate for http/sdk backends")
+    parser.add_argument("--arm-profile", type=str, default="auto",
+                        choices=["auto", "default", "master", "master-control",
+                                 "master-feedback", "slave", "arm3"],
+                        help=(
+                            "CAN ID profile for arm feedback. 'auto' listens for "
+                            "the common feedback/control pose and joint IDs."
+                        ))
     parser.add_argument("--port", type=int, default=8080,
                         help="Viser server port")
-    parser.add_argument("--width", type=int, default=640,
+    parser.add_argument("--control-api-host", type=str, default="127.0.0.1",
+                        help="Host for the external trajectory control HTTP API")
+    parser.add_argument("--control-api-port", type=int, default=8765,
+                        help="Port for the external trajectory control HTTP API")
+    parser.add_argument("--width", type=int, default=2448,
                         help="Camera frame width")
-    parser.add_argument("--height", type=int, default=480,
+    parser.add_argument("--height", type=int, default=2048,
                         help="Camera frame height")
     parser.add_argument("--fps", type=int, default=30,
                         help="Target capture frame rate")
-    parser.add_argument("--camera-backend", type=str, default="auto",
-                        choices=["auto", "opencv", "realsense", "zed"],
+    parser.add_argument("--camera-backend", type=str, default="pointgrey",
+                        choices=["auto", "opencv", "realsense", "pointgrey", "zed"],
                         help="Preferred camera backend")
+    parser.add_argument("--pointgrey-python", type=str, default=None,
+                        help="Python interpreter for the standalone PointGrey capture service")
+    parser.add_argument("--pointgrey-service-script", type=str, default=None,
+                        help="Path to pointgrey_capture_service.py (defaults to repo copy)")
+    parser.add_argument("--pointgrey-socket", type=str, default=DEFAULT_POINTGREY_SOCKET_PATH,
+                        help="Unix socket path used by the PointGrey capture service")
+    parser.add_argument("--pointgrey-shm-prefix", type=str, default=DEFAULT_POINTGREY_SHM_PREFIX,
+                        help="Shared-memory name prefix used by the PointGrey capture service")
+    parser.add_argument("--pointgrey-serial", type=str, default=None,
+                        help="Optional PointGrey camera serial to open in the external service")
+    parser.add_argument("--pointgrey-calibration", type=str, default=None,
+                        help="Path to a saved PointGrey intrinsics JSON to merge into camera_info")
     parser.add_argument("--max-sync-dt-ms", type=float, default=50.0,
                         help="Maximum allowed arm/camera timestamp delta in milliseconds")
     parser.add_argument("--streams", type=str, default="rgb",
@@ -51,6 +99,22 @@ def main():
                         help="Demo mode: no hardware required (implies --no-arm --no-camera)")
     parser.add_argument("--world-config", type=str, default="./data/world_config.json",
                         help="Path to world frame calibration JSON")
+    parser.add_argument("--inference-server", type=str, default="http://127.0.0.1:8000",
+                        help="Base URL for the online inference server")
+    parser.add_argument("--inference-max-new-tokens", type=int, default=100,
+                        help="Maximum number of tokens to request from the inference server")
+    parser.add_argument("--inference-temperature", type=float, default=1.0,
+                        help="Sampling temperature for online inference")
+    parser.add_argument("--inference-top-k", type=int, default=None,
+                        help="Optional top-k sampling limit for online inference")
+    parser.add_argument("--inference-no-sample", action="store_true",
+                        help="Disable sampling for online inference")
+    parser.add_argument("--inference-forbidden-tokens", type=str, default="",
+                        help="Comma-separated tokens that the server should forbid")
+    parser.add_argument("--inference-require-state-after-movement", action="store_true",
+                        help="Require the model to emit a state token after movement tokens")
+    parser.add_argument("--inference-state-after-movement-prob", type=float, default=0.0,
+                        help="Probability bias for inserting state after movement tokens")
     args = parser.parse_args()
 
     # Demo mode enables all no-hardware flags
@@ -64,6 +128,15 @@ def main():
         args.fps = 30
         args.streams = "rgb"
 
+    if args.pointgrey_calibration is None:
+        default_pointgrey_calibration = Path("./data/pointgrey_calibration.json")
+        if default_pointgrey_calibration.exists():
+            args.pointgrey_calibration = str(default_pointgrey_calibration)
+            print(
+                f"[Camera] Auto-loading PointGrey calibration from "
+                f"{default_pointgrey_calibration}"
+            )
+
     # Import here to delay loading until args are parsed
     from storage.hdf5_writer import HDF5Writer
     from gui.viser_collector import ViserDataCollectorApp
@@ -72,14 +145,38 @@ def main():
     if args.no_arm:
         arm_reader = None
         print("[Arm] Skipped (--no-arm mode)")
+    elif args.arm_backend == "http":
+        from robot.http_arm_reader import PushTHTTPArmReader
+        arm_reader = PushTHTTPArmReader(
+            service_url=args.arm_server,
+            poll_hz=args.arm_poll_hz,
+            connect_on_start=args.arm_http_connect,
+            can_interface=args.can_interface,
+            can_channel=args.can_channel,
+        )
+        arm_reader.start()
+        print(f"[Arm] Using PushT HTTP service: {args.arm_server}")
+    elif args.arm_backend == "sdk":
+        from robot.sdk_arm_reader import PiperSDKArmReader
+        arm_reader = PiperSDKArmReader(
+            can_interface=args.can_interface,
+            can_channel=args.can_channel,
+            bitrate=args.bitrate,
+            poll_hz=args.arm_poll_hz,
+        )
+        arm_reader.start()
+        print("[Arm] Using piper_sdk feedback: GetArmEndPoseMsgs().end_pose")
     else:
-        from robot.arm_reader import ArmReader
+        from robot.arm_reader import ArmReader, get_arm_can_config
+        arm_can_config = get_arm_can_config(args.arm_profile)
         arm_reader = ArmReader(
             can_interface=args.can_interface,
             can_channel=args.can_channel,
             bitrate=args.bitrate,
+            can_config=arm_can_config,
         )
         arm_reader.start()
+        print(f"[Arm] Using CAN profile: {arm_can_config.name}")
 
     # Create camera
     if args.no_camera:
@@ -95,6 +192,12 @@ def main():
             fps=args.fps,
             streams=args.streams,
             preferred_backend=args.camera_backend,
+            pointgrey_socket_path=args.pointgrey_socket,
+            pointgrey_shm_prefix=args.pointgrey_shm_prefix,
+            pointgrey_service_python=args.pointgrey_python,
+            pointgrey_service_script=args.pointgrey_service_script,
+            pointgrey_serial=args.pointgrey_serial,
+            pointgrey_calibration_path=args.pointgrey_calibration,
         )
         camera_sources = camera.sources
         print(f"[Camera] Discovered {len(camera_sources)} candidate source(s)")
@@ -164,6 +267,16 @@ def main():
         output_dir=args.output_dir,
         camera_sources=camera_sources,
         max_sync_dt_ms=args.max_sync_dt_ms,
+        inference_server=args.inference_server,
+        inference_max_new_tokens=args.inference_max_new_tokens,
+        inference_temperature=args.inference_temperature,
+        inference_top_k=args.inference_top_k,
+        inference_do_sample=not args.inference_no_sample,
+        inference_forbidden_tokens=args.inference_forbidden_tokens,
+        inference_require_state_after_movement=args.inference_require_state_after_movement,
+        inference_state_after_movement_prob=args.inference_state_after_movement_prob,
+        control_api_host=args.control_api_host,
+        control_api_port=args.control_api_port,
     )
 
     try:
