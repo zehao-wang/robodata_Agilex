@@ -1,0 +1,38 @@
+{
+  "backend": "pointgrey",
+  "camera_model": "Blackfly S BFS-U3-51S5M",
+  "serial": "16276900",
+  "stream": "color",
+  "image_rectified": false,
+  "resolution": {
+    "width": 2448,
+    "height": 2048
+  },
+  "fps": 29.998248102310825,
+  "color_space": "RGB",
+  "distortion_model": "opencv_plumb_bob",
+  "distortion": {
+    "k1": -0.12428345511597758,
+    "k2": 1.8763379375000402,
+    "p1": -0.006079630870877573,
+    "p2": -0.0035031168631210786,
+    "k3": -10.040094048816496
+  },
+  "intrinsics": {
+    "fx": 3777.3943460570104,
+    "fy": 3779.664344709722,
+    "cx": 1177.9811424999418,
+    "cy": 937.4754089606182
+  },
+  "calibration_metadata": {
+    "method": "opencv_chessboard",
+    "board_cols": 7,
+    "board_rows": 5,
+    "square_size_mm": 30.0,
+    "sample_count": 14,
+    "rms_reprojection_error_px": 0.5577290917496007,
+    "mean_view_error_px": 0.5323202695165362,
+    "max_view_error_px": 0.8916653990745544,
+    "captured_at_utc_epoch_s": 1775141168.7731924
+  }
+}
